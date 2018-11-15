@@ -24,6 +24,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import javax.annotation.Nullable;
+import org.apache.beam.model.pipeline.v1.Endpoints;
 import org.apache.beam.model.pipeline.v1.Endpoints.ApiServiceDescriptor;
 import org.apache.beam.model.pipeline.v1.RunnerApi;
 import org.apache.beam.runners.dataflow.options.DataflowWorkerHarnessOptions;
@@ -115,7 +116,83 @@ public class DataflowRunnerHarness {
           beamFnControlService,
           beamFnDataService,
           controlApiService,
-          beamFnStateService);
+          beamFnStateService,
+          new DataflowWorkUnitClient(pipelineOptions, LOG));
+      servicesServer.shutdown();
+      loggingServer.shutdown();
+    } finally {
+      if (servicesServer != null) {
+        servicesServer.awaitTermination(30, TimeUnit.SECONDS);
+        servicesServer.shutdownNow();
+      }
+      if (loggingServer != null) {
+        loggingServer.awaitTermination(30, TimeUnit.SECONDS);
+        loggingServer.shutdownNow();
+      }
+    }
+  }
+
+  public static void main(
+      @Nullable RunnerApi.Pipeline pipeline,
+      DataflowWorkerHarnessOptions pipelineOptions,
+      Endpoints.ApiServiceDescriptor loggingApiService,
+      Endpoints.ApiServiceDescriptor controlApiService,
+      WorkUnitClient workUnitClient)
+      throws Exception {
+
+    LOG.info(
+        "{} started, using port {} for control, {} for logging.",
+        DataflowRunnerHarness.class,
+        controlApiService,
+        loggingApiService);
+
+    DataflowWorkerHarnessHelper.initializeLogging(DataflowRunnerHarness.class);
+    DataflowWorkerHarnessHelper.configureLogging(pipelineOptions);
+
+    // Initialized registered file systems.˜
+    FileSystems.setDefaultPipelineOptions(pipelineOptions);
+
+    ServerFactory serverFactory = ServerFactory.fromOptions(pipelineOptions);
+    ServerStreamObserverFactory streamObserverFactory =
+        ServerStreamObserverFactory.fromOptions(pipelineOptions);
+
+    Server servicesServer = null;
+    Server loggingServer = null;
+    try (BeamFnLoggingService beamFnLoggingService =
+            new BeamFnLoggingService(
+                loggingApiService,
+                DataflowWorkerLoggingInitializer.getSdkLoggingHandler()::publish,
+                streamObserverFactory::from,
+                GrpcContextHeaderAccessorProvider.getHeaderAccessor());
+        BeamFnControlService beamFnControlService =
+            new BeamFnControlService(
+                controlApiService,
+                streamObserverFactory::from,
+                GrpcContextHeaderAccessorProvider.getHeaderAccessor());
+        BeamFnDataGrpcService beamFnDataService =
+            new BeamFnDataGrpcService(
+                pipelineOptions,
+                controlApiService,
+                streamObserverFactory::from,
+                GrpcContextHeaderAccessorProvider.getHeaderAccessor());
+        GrpcStateService beamFnStateService = GrpcStateService.create()) {
+
+      servicesServer =
+          serverFactory.create(
+              controlApiService,
+              ImmutableList.of(beamFnControlService, beamFnDataService, beamFnStateService));
+
+      loggingServer =
+          serverFactory.create(loggingApiService, ImmutableList.of(beamFnLoggingService));
+
+      start(
+          pipeline,
+          pipelineOptions,
+          beamFnControlService,
+          beamFnDataService,
+          controlApiService,
+          beamFnStateService,
+          workUnitClient);
       servicesServer.shutdown();
       loggingServer.shutdown();
     } finally {
@@ -137,14 +214,14 @@ public class DataflowRunnerHarness {
       BeamFnControlService beamFnControlService,
       BeamFnDataGrpcService beamFnDataService,
       ApiServiceDescriptor stateApiServiceDescriptor,
-      GrpcStateService beamFnStateService)
+      GrpcStateService beamFnStateService,
+      WorkUnitClient client)
       throws Exception {
 
     SdkHarnessRegistry sdkHarnessRegistry =
         SdkHarnessRegistries.createFnApiSdkHarnessRegistry(
             stateApiServiceDescriptor, beamFnStateService, beamFnDataService);
     if (pipelineOptions.isStreaming()) {
-      DataflowWorkUnitClient client = new DataflowWorkUnitClient(pipelineOptions, LOG);
       LOG.info("Initializing Streaming Worker.");
 
       StreamingDataflowWorker worker =
@@ -171,7 +248,6 @@ public class DataflowRunnerHarness {
     } else {
       while (true) {
         try (FnApiControlClient controlClient = beamFnControlService.get()) {
-          DataflowWorkUnitClient client = new DataflowWorkUnitClient(pipelineOptions, LOG);
           LOG.info("Initializing Batch Worker.");
           BatchDataflowWorker worker =
               BatchDataflowWorker.forBatchFnWorkerHarness(
