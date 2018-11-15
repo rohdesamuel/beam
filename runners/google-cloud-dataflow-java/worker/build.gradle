@@ -96,6 +96,7 @@ def common_test_compile_project_dependencies = [
     ":beam-runners-core-java",
     ":beam-sdks-java-core",
     ":beam-sdks-java-extensions-google-cloud-platform-core",
+    ":beam-sdks-java-harness",
 ]
 
 dependencies {
