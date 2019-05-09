@@ -18,6 +18,7 @@
 package org.apache.beam.runners.dataflow.worker.util.common.worker;
 
 import org.apache.beam.runners.dataflow.worker.counters.Counter;
+import org.apache.beam.runners.dataflow.worker.counters.CounterFactory;
 
 /** Factory for ShuffleReadCounter */
 public class ShuffleReadCounterFactory {
@@ -28,8 +29,12 @@ public class ShuffleReadCounterFactory {
   public ShuffleReadCounter create(
       String originalShuffleStepName,
       boolean experimentEnabled,
-      Counter<Long, Long> legacyPerOperationPerDatasetBytesCounter) {
+      Counter<Long, Long> legacyPerOperationPerDatasetBytesCounter,
+      CounterFactory counterFactory) {
     return new ShuffleReadCounter(
-        originalShuffleStepName, experimentEnabled, legacyPerOperationPerDatasetBytesCounter);
+        originalShuffleStepName,
+        experimentEnabled,
+        legacyPerOperationPerDatasetBytesCounter,
+        counterFactory);
   }
 }

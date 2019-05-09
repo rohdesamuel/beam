@@ -66,6 +66,8 @@ public abstract class GroupingShuffleEntryIterator {
    */
   private long totalByteSizeOfEntriesForCurrentKey = 0L;
 
+  private long startTimeForCurrentKey = 0L;
+
   private KeyGroupedShuffleEntries current = null;
   private boolean isFinished = false;
 
@@ -95,7 +97,8 @@ public abstract class GroupingShuffleEntryIterator {
   protected abstract void notifyElementRead(long byteSize);
 
   /** Notifies observers about the bytes read that are to be committed to the counters. */
-  protected abstract void commitBytesRead(long bytesRead);
+  protected abstract void commitGroupStatistics(
+      ShuffleReadCounter.KeyGroupStatistics keyGroupStatistics);
 
   public boolean advance() {
     if (isFinished) {
@@ -107,7 +110,7 @@ public abstract class GroupingShuffleEntryIterator {
     // values of the same key happens through ValuesIterable instead.
     while (true) {
       if (!shuffleIterator.hasNext()) {
-        return markFinishedAndCommitBytesCounter();
+        return markFinishedAndCommitGroupStatistics();
       }
       // Save an iterator to the current entry, in case it's in a different key
       // than the previous entry.
@@ -129,13 +132,17 @@ public abstract class GroupingShuffleEntryIterator {
     ShufflePosition groupStart = entry.getPosition();
     boolean isAtSplitPoint = (groupStart == null) || !groupStart.equals(lastGroupStart);
     if (!rangeTracker.tryReturnRecordAt(isAtSplitPoint, groupStart)) {
-      return markFinishedAndCommitBytesCounter();
+      return markFinishedAndCommitGroupStatistics();
     }
     lastGroupStart = groupStart;
 
-    commitBytesRead(totalByteSizeOfEntriesForCurrentKey);
+    commitGroupStatistics(
+        ShuffleReadCounter.KeyGroupStatistics.create(
+            currentKeyBytes,
+            totalByteSizeOfEntriesForCurrentKey,
+            System.currentTimeMillis() - startTimeForCurrentKey));
     totalByteSizeOfEntriesForCurrentKey = entry.length();
-
+    startTimeForCurrentKey = System.currentTimeMillis();
     currentKeyBytes = entry.getKey();
     current =
         new KeyGroupedShuffleEntries(
@@ -146,8 +153,12 @@ public abstract class GroupingShuffleEntryIterator {
     return true;
   }
 
-  private boolean markFinishedAndCommitBytesCounter() {
-    commitBytesRead(totalByteSizeOfEntriesForCurrentKey);
+  private boolean markFinishedAndCommitGroupStatistics() {
+    commitGroupStatistics(
+        ShuffleReadCounter.KeyGroupStatistics.create(
+            currentKeyBytes,
+            totalByteSizeOfEntriesForCurrentKey,
+            System.currentTimeMillis() - startTimeForCurrentKey));
 
     current = null;
     isFinished = true;

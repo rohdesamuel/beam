@@ -28,6 +28,7 @@ import com.google.api.services.dataflow.model.ApproximateSplitRequest;
 import java.io.ByteArrayInputStream;
 import java.io.Closeable;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicLong;
 import javax.annotation.Nullable;
@@ -68,6 +69,7 @@ import org.slf4j.LoggerFactory;
  */
 public class GroupingShuffleReader<K, V> extends NativeReader<WindowedValue<KV<K, Reiterable<V>>>> {
   private static final Logger LOG = LoggerFactory.getLogger(GroupingShuffleReader.class);
+  private static final int MAX_HOT_KEY_BYTES = 100;
 
   private final PipelineOptions options;
   final byte[] shuffleReaderConfig;
@@ -79,6 +81,7 @@ public class GroupingShuffleReader<K, V> extends NativeReader<WindowedValue<KV<K
 
   // Counts how many bytes were from by a given operation from a given shuffle session.
   @Nullable Counter<Long, Long> perOperationPerDatasetBytesCounter;
+
   Coder<K> keyCoder;
   Coder<?> valueCoder;
   @Nullable Coder<?> secondaryKeyCoder;
@@ -228,7 +231,8 @@ public class GroupingShuffleReader<K, V> extends NativeReader<WindowedValue<KV<K
             parentReader.shuffleReadCounterFactory.create(
                 baseShuffleOriginalStepName,
                 ec.isEnabled(Experiment.IntertransformIO),
-                parentReader.perOperationPerDatasetBytesCounter);
+                parentReader.perOperationPerDatasetBytesCounter,
+                parentReader.executionContext.getCounterFactory());
       }
 
       try (Closeable read = tracker.enterState(readState)) {
@@ -250,9 +254,21 @@ public class GroupingShuffleReader<K, V> extends NativeReader<WindowedValue<KV<K
               }
 
               @Override
-              protected void commitBytesRead(long bytes) {
+              protected void commitGroupStatistics(
+                  ShuffleReadCounter.KeyGroupStatistics keyGroupStatistics) {
                 if (shuffleReadCounter != null) {
-                  shuffleReadCounter.addBytesRead(bytes);
+                  String decodedKey =
+                      new String(
+                          keyGroupStatistics.key(),
+                          0,
+                          keyGroupStatistics.key().length > MAX_HOT_KEY_BYTES
+                              ? MAX_HOT_KEY_BYTES
+                              : keyGroupStatistics.key().length,
+                          StandardCharsets.UTF_8);
+
+                  shuffleReadCounter.addBytesRead(keyGroupStatistics.bytesRead());
+                  shuffleReadCounter.recordTimeTakenForKey(
+                      decodedKey, keyGroupStatistics.millisecondsElapsed());
                 }
               }
             };

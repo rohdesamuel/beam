@@ -17,12 +17,14 @@
  */
 package org.apache.beam.runners.dataflow.worker.util.common.worker;
 
+import com.google.auto.value.AutoValue;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import org.apache.beam.runners.core.metrics.ExecutionStateTracker;
 import org.apache.beam.runners.dataflow.worker.DataflowOperationContext.DataflowExecutionState;
 import org.apache.beam.runners.dataflow.worker.counters.Counter;
+import org.apache.beam.runners.dataflow.worker.counters.CounterFactory;
+import org.apache.beam.runners.dataflow.worker.counters.CounterFactory.CounterDistribution;
 import org.apache.beam.runners.dataflow.worker.counters.CounterName;
-import org.apache.beam.runners.dataflow.worker.counters.CounterSet;
 import org.apache.beam.vendor.guava.v20_0.com.google.common.annotations.VisibleForTesting;
 
 /** Counts the Bytes and MSECS spent within a shuffle read. */
@@ -30,9 +32,12 @@ public class ShuffleReadCounter {
   private final String originalShuffleStepName;
   private final boolean experimentEnabled;
 
-  public CounterSet counterSet;
+  private final CounterFactory counterFactory;
 
   private Counter<Long, Long> currentCounter;
+
+  private Counter<Long, CounterDistribution> topKeyTimeTaken;
+
   /**
    * Counter to increment with the bytes read from the underlying shuffle iterator, or null if no
    * counting is needed.
@@ -44,23 +49,28 @@ public class ShuffleReadCounter {
   public ShuffleReadCounter(
       String originalShuffleStepName,
       boolean experimentEnabled,
-      Counter<Long, Long> legacyPerOperationPerDatasetBytesCounter) {
+      Counter<Long, Long> legacyPerOperationPerDatasetBytesCounter,
+      CounterFactory counterFactory) {
     this.originalShuffleStepName = originalShuffleStepName;
     this.experimentEnabled = experimentEnabled;
     this.legacyPerOperationPerDatasetBytesCounter = legacyPerOperationPerDatasetBytesCounter;
-    this.counterSet = new CounterSet();
+    this.counterFactory = counterFactory;
   }
 
   @SuppressWarnings("ReferenceEquality")
   @SuppressFBWarnings("ES_COMPARING_STRINGS_WITH_EQ")
   private void checkState() {
+    ExecutionStateTracker.ExecutionState currentState =
+        ExecutionStateTracker.getCurrentExecutionState();
+    String currentStateName = null;
+    if (currentState instanceof DataflowExecutionState) {
+      currentStateName = ((DataflowExecutionState) currentState).getStepName().originalName();
+    }
+    topKeyTimeTaken =
+        counterFactory.distribution(
+            CounterName.named("KeyProcessingTime").withOriginalName(currentStateName).withOrigin("SYSTEM"));
+
     if (this.experimentEnabled) {
-      ExecutionStateTracker.ExecutionState currentState =
-          ExecutionStateTracker.getCurrentExecutionState();
-      String currentStateName = null;
-      if (currentState instanceof DataflowExecutionState) {
-        currentStateName = ((DataflowExecutionState) currentState).getStepName().originalName();
-      }
       if (this.currentCounter != null
           && currentStateName == this.currentCounter.getName().originalRequestingStepName()) {
         // If the step name of the state has not changed do not do another lookup.
@@ -68,7 +78,7 @@ public class ShuffleReadCounter {
       }
       CounterName name =
           ShuffleReadCounter.generateCounterName(this.originalShuffleStepName, currentStateName);
-      this.currentCounter = this.counterSet.longSum(name);
+      this.currentCounter = counterFactory.longSum(name);
     } else {
       this.currentCounter = this.legacyPerOperationPerDatasetBytesCounter;
     }
@@ -82,8 +92,9 @@ public class ShuffleReadCounter {
     this.currentCounter.addValue(n);
   }
 
-  public CounterSet getCounterSet() {
-    return this.counterSet;
+  /** Records the time taken to consume all values of the given key. */
+  public void recordTimeTakenForKey(String key, long time) {
+    topKeyTimeTaken = topKeyTimeTaken.addValue(time);
   }
 
   @VisibleForTesting
@@ -93,5 +104,38 @@ public class ShuffleReadCounter {
         .withOriginalName(originalShuffleStepName)
         .withOriginalRequestingStepName(executingStepOriginalName)
         .withOrigin("SYSTEM");
+  }
+
+  /**
+   * A value class containing statistics recorded while reading records from a shuffle group. The
+   * values are committed when the end of a group is reached by {@link
+   * GroupingShuffleEntryIterator#commitGroupStatistics(KeyGroupStatistics)}.
+   */
+  @AutoValue
+  public abstract static class KeyGroupStatistics {
+
+    /**
+     * Creates a KeyGroupStatistics value object.
+     *
+     * @param key UTF-8 encoded bytes, may be null.
+     * @param bytesRead number of bytes read in this group.
+     * @param millisecondsElapsed number of milliseconds elapsed while reading this group.
+     * @return the KeyGroupStatistics that encapsulates these parameters.
+     */
+    public static KeyGroupStatistics create(byte[] key, long bytesRead, long millisecondsElapsed) {
+      return new AutoValue_ShuffleReadCounter_KeyGroupStatistics(
+          key == null ? null : key.clone(), bytesRead, millisecondsElapsed);
+    }
+
+    /**
+     * Returns the UTF-8 encoded bytes of the key; <b>do not mutate</b> the returned object as it
+     * references the actual shuffle key.
+     */
+    @SuppressWarnings("mutable") // For a primitive array AutoValue returns the original array.
+    public abstract byte[] key();
+
+    public abstract long bytesRead();
+
+    public abstract long millisecondsElapsed();
   }
 }
