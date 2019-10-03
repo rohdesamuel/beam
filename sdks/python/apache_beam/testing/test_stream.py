@@ -70,11 +70,13 @@ class Event(with_metaclass(ABCMeta, object)):
 class ElementEvent(Event):
   """Element-producing test stream event."""
 
-  def __init__(self, timestamped_values):
+  def __init__(self, timestamped_values, tag=''):
     self.timestamped_values = timestamped_values
+    self.tag = tag
 
   def __eq__(self, other):
-    return self.timestamped_values == other.timestamped_values
+    return (self.timestamped_values == other.timestamped_values and
+            self.tag == other.tag)
 
   def __hash__(self):
     return hash(self.timestamped_values)
@@ -154,9 +156,50 @@ class TestStream(PTransform):
           'Must advance processing time by positive amount.')
     else:
       raise ValueError('Unknown event: %s' % event)
-    self.events.append(event)
+    self._events.append(event)
 
-  def add_elements(self, elements):
+  def has_events(self):
+    return len(self._events) > 0
+
+  def events(self, index):
+    if self._endpoint:
+      channel = grpc.insecure_channel(self._endpoint)
+      stub = beam_interactive_api_pb2_grpc.InteractiveServiceStub(channel)
+      request = beam_interactive_api_pb2.EventsRequest()
+      for response in stub.Events(request):
+        if response.end_of_stream:
+          self._next_token = -1
+        else:
+          self._next_token = 0
+        for event in response.events:
+          if event.HasField('watermark_event'):
+            yield WatermarkEvent(event.watermark_event.new_watermark)
+          elif event.HasField('processing_time_event'):
+            yield ProcessingTimeEvent(event.processing_time_event.advance_duration)
+          elif event.HasField('element_event'):
+            for element in event.element_event.elements:
+              value = self.coder().decode(element.encoded_element)
+              yield ElementEvent([TimestampedValue(value, element.timestamp)])
+    else:
+      if len(self._events) == 0:
+        return
+      yield self._events[index - 1]
+
+  def begin(self):
+    return 0
+
+  def end(self):
+    if self._endpoint:
+      return -1
+    return len(self._events)
+
+  def next(self, index):
+    if self._endpoint:
+      return self._next_token
+    else:
+      return index + 1
+
+  def add_elements(self, elements, tag=''):
     """Add elements to the TestStream.
 
     Elements added to the TestStream will be produced during pipeline execution.
@@ -180,7 +223,7 @@ class TestStream(PTransform):
         # Add elements with timestamp equal to current watermark.
         timestamped_values.append(
             TimestampedValue(element, self.current_watermark))
-    self._add(ElementEvent(timestamped_values))
+    self._add(ElementEvent(timestamped_values, tag))
     return self
 
   def advance_watermark_to(self, new_watermark):

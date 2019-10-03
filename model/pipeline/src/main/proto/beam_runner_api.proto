@@ -508,6 +508,7 @@ message TestStreamPayload {
 
     message AddElements {
       repeated TimestampedElement elements = 1;
+      string tag = 2;
     }
   }
 
