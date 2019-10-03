@@ -55,7 +55,7 @@ class TestStreamTest(unittest.TestCase):
                    .add_elements(['d'])
                    .advance_watermark_to_infinity())
     self.assertEqual(
-        test_stream.events,
+        test_stream._events,
         [
             WatermarkEvent(0),
             ElementEvent([
@@ -126,8 +126,8 @@ class TestStreamTest(unittest.TestCase):
     p.run()
 
   def test_multiple_outputs(self):
-    print('file', beam.__file__)
     test_stream = (TestStream()
+                   .advance_watermark_to(0)
                    .add_elements(['a', 'b', 'c'], 'letters')
                    .add_elements(['1', '2', '3'], 'numbers'))
 
@@ -139,16 +139,20 @@ class TestStreamTest(unittest.TestCase):
     options = PipelineOptions()
     options.view_as(StandardOptions).streaming = True
     p = TestPipeline(options=options)
-    my_record_fn = RecordFn()
-    records = p | test_stream | beam.ParDo(my_record_fn)
+    pcoll = p | test_stream.with_outputs()
 
-    assert_that(records, equal_to([
+    letters = pcoll.letters | 'Letters ParDo' >> beam.ParDo(RecordFn())
+    numbers = pcoll.numbers | 'Numbers ParDo' >> beam.ParDo(RecordFn())
+
+    assert_that(letters, equal_to([
         ('a', timestamp.Timestamp(0)),
         ('b', timestamp.Timestamp(0)),
-        ('c', timestamp.Timestamp(0)),
+        ('c', timestamp.Timestamp(0))]), label='check letters')
+
+    assert_that(numbers, equal_to([
         ('1', timestamp.Timestamp(0)),
         ('2', timestamp.Timestamp(0)),
-        ('r', timestamp.Timestamp(0))]))
+        ('3', timestamp.Timestamp(0))]), label='check numbers')
 
     p.run()
 

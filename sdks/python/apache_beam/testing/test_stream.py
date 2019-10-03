@@ -31,6 +31,8 @@ from future.utils import with_metaclass
 from apache_beam import coders
 from apache_beam import core
 from apache_beam import pvalue
+from apache_beam.portability.api import beam_interactive_api_pb2
+from apache_beam.portability.api import beam_interactive_api_pb2_grpc
 from apache_beam.transforms import PTransform
 from apache_beam.transforms import window
 from apache_beam.transforms.window import TimestampedValue
@@ -70,7 +72,7 @@ class Event(with_metaclass(ABCMeta, object)):
 class ElementEvent(Event):
   """Element-producing test stream event."""
 
-  def __init__(self, timestamped_values, tag=''):
+  def __init__(self, timestamped_values, tag=None):
     self.timestamped_values = timestamped_values
     self.tag = tag
 
@@ -117,6 +119,19 @@ class ProcessingTimeEvent(Event):
     return self.advance_by < other.advance_by
 
 
+class _MultiTestStream(PTransform):
+  def __init__(self, test_stream, tags, main_tag):
+    super(_MultiTestStream, self).__init__(test_stream.label)
+    self._test_stream = test_stream
+    self._tags = tags
+    self._main_tag = main_tag
+
+  def expand(self, pcoll):
+    _ = pcoll | self._test_stream
+    return pvalue.DoOutputsTuple(
+        pcoll.pipeline, self._test_stream, self._tags, self._main_tag)
+
+
 class TestStream(PTransform):
   """Test stream that generates events on an unbounded PCollection of elements.
 
@@ -129,10 +144,18 @@ class TestStream(PTransform):
     assert coder is not None
     self.coder = coder
     self.current_watermark = timestamp.MIN_TIMESTAMP
-    self.events = []
+    self.output_tags = set()
+    self._events = []
 
   def get_windowing(self, unused_inputs):
     return core.Windowing(window.GlobalWindows())
+
+  def with_outputs(self, *tags, **main_kw):
+    main_tag = main_kw.pop('main', None)
+    if main_kw:
+      raise ValueError('Unexpected keyword arguments: %s' %
+                       list(main_kw))
+    return _MultiTestStream(self, tags, main_tag)
 
   def expand(self, pbegin):
     assert isinstance(pbegin, pvalue.PBegin)
@@ -161,45 +184,24 @@ class TestStream(PTransform):
   def has_events(self):
     return len(self._events) > 0
 
+  def _events_from_script(self, index):
+    if len(self._events) == 0:
+      return
+    yield self._events[index]
+
   def events(self, index):
-    if self._endpoint:
-      channel = grpc.insecure_channel(self._endpoint)
-      stub = beam_interactive_api_pb2_grpc.InteractiveServiceStub(channel)
-      request = beam_interactive_api_pb2.EventsRequest()
-      for response in stub.Events(request):
-        if response.end_of_stream:
-          self._next_token = -1
-        else:
-          self._next_token = 0
-        for event in response.events:
-          if event.HasField('watermark_event'):
-            yield WatermarkEvent(event.watermark_event.new_watermark)
-          elif event.HasField('processing_time_event'):
-            yield ProcessingTimeEvent(event.processing_time_event.advance_duration)
-          elif event.HasField('element_event'):
-            for element in event.element_event.elements:
-              value = self.coder().decode(element.encoded_element)
-              yield ElementEvent([TimestampedValue(value, element.timestamp)])
-    else:
-      if len(self._events) == 0:
-        return
-      yield self._events[index - 1]
+    return self._events_from_script(index)
 
   def begin(self):
     return 0
 
-  def end(self):
-    if self._endpoint:
-      return -1
-    return len(self._events)
+  def end(self, index):
+    return index == len(self._events)
 
   def next(self, index):
-    if self._endpoint:
-      return self._next_token
-    else:
-      return index + 1
+    return index + 1
 
-  def add_elements(self, elements, tag=''):
+  def add_elements(self, elements, tag=None):
     """Add elements to the TestStream.
 
     Elements added to the TestStream will be produced during pipeline execution.
