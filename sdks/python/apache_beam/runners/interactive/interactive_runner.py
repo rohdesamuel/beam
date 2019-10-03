@@ -28,12 +28,15 @@ import logging
 
 import apache_beam as beam
 from apache_beam import runners
+from apache_beam.io.filesystems import FileSystems
 from apache_beam.runners.direct import direct_runner
 from apache_beam.runners.interactive import cache_manager as cache
 from apache_beam.runners.interactive import pipeline_analyzer
+from apache_beam.runners.interactive.caching.file_based_cache import TextBasedCache
+from apache_beam.runners.interactive.caching.streaming_cache import StreamingCache
 from apache_beam.runners.interactive.display import display_manager
 from apache_beam.runners.interactive.display import pipeline_graph_renderer
-from apache_beam.testing.test_stream import InteractiveStreamController
+from apache_beam.testing.interactive_stream import InteractiveStreamController
 
 # size of PCollection samples cached.
 SAMPLE_SIZE = 8
@@ -63,10 +66,12 @@ class InteractiveRunner(runners.PipelineRunner):
     """
     self._underlying_runner = (underlying_runner
                                or direct_runner.DirectRunner())
-    self._cache_manager = cache.FileBasedCacheManager(cache_dir, cache_format)
+    self._cache_manager = cache.FileBasedCacheManager(FileSystems.join(cache_dir, 'cache'), cache_format)
     self._renderer = pipeline_graph_renderer.get_renderer(render_option)
     self._in_session = False
-    self._interactive_stream_controller = InteractiveStreamController(endpoint)
+
+    streaming_cache = StreamingCache([TextBasedCache(cache_dir)])
+    self._interactive_stream_controller = InteractiveStreamController(endpoint, streaming_cache)
 
   def is_fnapi_compatible(self):
     # TODO(BEAM-8436): return self._underlying_runner.is_fnapi_compatible()

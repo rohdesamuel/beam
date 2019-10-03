@@ -21,6 +21,7 @@ For internal use only; no backwards-compatibility guarantees.
 """
 from __future__ import absolute_import
 
+import apache_beam as beam
 import grpc
 
 from abc import ABCMeta
@@ -44,10 +45,11 @@ from apache_beam.utils.windowed_value import WindowedValue
 from apache_beam.portability.api import beam_runner_api_pb2
 from apache_beam.portability.api import beam_fn_api_pb2
 from apache_beam.portability.api import beam_fn_api_pb2_grpc
+from apache_beam.portability.api import beam_interactive_api_pb2
+from apache_beam.portability.api import beam_interactive_api_pb2_grpc
 from apache_beam.portability.api import endpoints_pb2
 
 from apache_beam.portability.api.beam_runner_api_pb2 import TestStreamPayload
-from apache_beam.portability.api.beam_fn_api_pb2 import InteractiveStreamRecord
 
 from apache_beam.runners.interactive.cache_manager import FileBasedCacheManager
 
@@ -116,11 +118,13 @@ class TaggedElementEvent(Event):
 class ElementEvent(Event):
   """Element-producing test stream event."""
 
-  def __init__(self, timestamped_values):
+  def __init__(self, timestamped_values, tag=''):
     self.timestamped_values = timestamped_values
+    self.tag = tag
 
   def __eq__(self, other):
-    return self.timestamped_values == other.timestamped_values
+    return (self.timestamped_values == other.timestamped_values and
+            self.tag == other.tag)
 
   def __hash__(self):
     return hash(self.timestamped_values)
@@ -160,133 +164,6 @@ class ProcessingTimeEvent(Event):
   def __lt__(self, other):
     return self.advance_by < other.advance_by
 
-from apache_beam.runners.direct.watermark_manager import WatermarkManager
-from apache_beam.runners.interactive.caching.file_based_cache import TextBasedCache
-class UnboundedSourceCache:
-  def __init__(self, clock, watermark_manager, applied_ptransform, cache_manager, coder=coders.FastPrimitivesCoder):
-    self._watermark_manager = watermark_manager
-    self._applied_ptransform = applied_ptransform
-    self._clock = clock
-    self._coder = coder
-    self._cache_manager = cache_manager
-
-  def _watermark(self):
-    return self._watermark_manager.get_watermarks(self._applied_ptransform)
-
-  def _time(self):
-    return self._clock.time()
-
-  def make_record(self, element, event_timestamp=None):
-    watermark = self._watermark()
-    event_timestamp = event_timestamp if event_timestamp else watermark
-
-    element_payload = TestStreamPayload.TimestampedElement(encoded_element=self._coder.encode(element), timestamp=event_timestamp)
-    return InteractiveStreamRecord(element=element, processing_time=self._time(), watermark_us=self._watermark())
-
-import tempfile
-import os
-class InteractiveStreamController(beam_fn_api_pb2_grpc.InteractiveStreamServicer):
-  # TODO(srohde): Add real-time playback with speed multiplier
-  # TODO(srohde): Add tests
-
-  def __init__(self, endpoint, readers=[]):
-    self._endpoint = endpoint
-    self._server = grpc.server(ThreadPoolExecutor(max_workers=10))
-    beam_fn_api_pb2_grpc.add_InteractiveStreamServicer_to_server(
-        self, self._server)
-    self._server.add_insecure_port(self._endpoint)
-    self._server.start()
-    self._readers = readers
-
-    coder = coders.FastPrimitivesCoder()
-    self._events=[]
-    self._watermark_us = None
-    self._timestamp = None
-
-    self._cache_dir = tempfile.mkdtemp(
-          prefix='interactive-temp-', dir=os.environ.get('TEST_TMPDIR', None))
-    self._cache_manager = TextBasedCache(location=self._cache_dir, mode='overwrite')
-
-    records = []
-    for i in range(10):
-      element = TestStreamPayload.TimestampedElement(encoded_element=coder.encode(i), timestamp=i)
-      record = InteractiveStreamRecord(element=element, processing_time=i, watermark_us=i)
-      records.append(record.SerializeToString())
-    self._cache_manager.write(records)
-
-    class reader:
-      def __init__(self, cache):
-        self._cache = cache
-
-      def read(self):
-        for e in self._cache.read():
-          record = InteractiveStreamRecord()
-          record.ParseFromString(e)
-          yield record
-
-    # self._readers.append(cache_reader(self._cache_manager).read())
-    self._readers.append(reader(self._cache_manager).read())
-    self._state = 'RUNNING'
-
-  def Start(self, request, context):
-    self._state = 'RUNNING'
-    return beam_fn_api_pb2.StartResponse()
-
-  def Pause(self, request, context):
-    print('Paused')
-    self._state = 'PAUSED'
-    return beam_fn_api_pb2.PauseResponse()
-
-  def Step(self, request, context):
-    self._state = 'STEP'
-    return beam_fn_api_pb2.StepResponse()
-
-  def read(self):
-    records = []
-    num_readers = len(self._readers)
-    num_stopped = 0
-    for r in self._readers:
-      try:
-        records.append(next(r))
-      except StopIteration:
-        num_stopped += 1
-
-    if num_stopped == num_readers:
-      return []
-
-    records.sort(key=lambda x: x.processing_time)
-    events = []
-    for r in records:
-      if self._timestamp != r.processing_time:
-        duration = r.processing_time - self._timestamp if self._timestamp else r.processing_time
-        self._timestamp = r.processing_time
-        processing_time_event = TestStreamPayload.Event.AdvanceProcessingTime(advance_duration=duration)
-        events.append(TestStreamPayload.Event(processing_time_event=processing_time_event))
-      if self._watermark_us != r.watermark_us:
-        self._watermark_us = r.watermark_us
-        watermark_event = TestStreamPayload.Event.AdvanceWatermark(new_watermark=self._watermark_us)
-        events.append(TestStreamPayload.Event(watermark_event=watermark_event))
-      events.append(TestStreamPayload.Event(element_event=TestStreamPayload.Event.AddElements(elements=[r.element])))
-    return events
-
-  def Events(self, request, context):
-    import time
-    while self._state != 'RUNNING' and self._state != 'STEP':
-      time.sleep(0.01)
-
-    events = self.read()
-    if len(events) == 0:
-      yield beam_fn_api_pb2.EventsResponse(token=-1)
-      self._watermark = MIN_TIMESTAMP
-      self._timestamp = None
-    else:
-      for e in events:
-        yield beam_fn_api_pb2.EventsResponse(events=[e], token=request.token + 1)
-
-    if self._state == 'STEP':
-      self._state = 'PAUSED'
-    time.sleep(1)
-
 class TestStream(PTransform):
   """Test stream that generates events on an unbounded PCollection of elements.
 
@@ -307,9 +184,17 @@ class TestStream(PTransform):
     return core.Windowing(window.GlobalWindows())
 
   def expand(self, pbegin):
-    assert isinstance(pbegin, pvalue.PBegin)
+    # assert isinstance(pbegin, pvalue.PBegin)
     self.pipeline = pbegin.pipeline
-    return pvalue.PCollection(self.pipeline, is_bounded=False)
+
+    class printer(beam.DoFn):
+      def process(self, x):
+        print(x)
+        yield x
+
+    if isinstance(pbegin, pvalue.PBegin):
+      return pvalue.PCollection(self.pipeline, is_bounded=False) | beam.ParDo(printer())
+    return pbegin | beam.ParDo(printer)
 
   def _infer_output_coder(self, input_type=None, input_coder=None):
     return self.coder
@@ -336,10 +221,13 @@ class TestStream(PTransform):
   def events(self, index):
     if self._endpoint:
       channel = grpc.insecure_channel(self._endpoint)
-      stub = beam_fn_api_pb2_grpc.InteractiveStreamStub(channel)
-      request = beam_fn_api_pb2.EventsRequest(token=index)
+      stub = beam_interactive_api_pb2_grpc.InteractiveServiceStub(channel)
+      request = beam_interactive_api_pb2.EventsRequest()
       for response in stub.Events(request):
-        self._next_token = response.token
+        if response.end_of_stream:
+          self._next_token = -1
+        else:
+          self._next_token = 0
         for event in response.events:
           if event.HasField('watermark_event'):
             yield WatermarkEvent(event.watermark_event.new_watermark)
@@ -368,7 +256,7 @@ class TestStream(PTransform):
     else:
       return index + 1
 
-  def add_elements(self, elements):
+  def add_elements(self, elements, tag=''):
     """Add elements to the TestStream.
 
     Elements added to the TestStream will be produced during pipeline execution.
@@ -392,7 +280,7 @@ class TestStream(PTransform):
         # Add elements with timestamp equal to current watermark.
         timestamped_values.append(
             TimestampedValue(element, self.current_watermark))
-    self._add(ElementEvent(timestamped_values))
+    self._add(ElementEvent(timestamped_values, tag))
     return self
 
   def advance_watermark_to(self, new_watermark):

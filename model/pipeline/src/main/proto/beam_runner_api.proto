@@ -493,8 +493,6 @@ message TestStreamPayload {
 
   string endpoint = 3;
 
-  repeated string files = 4;
-
   message Event {
     oneof event {
       AdvanceWatermark watermark_event = 1;
@@ -512,6 +510,7 @@ message TestStreamPayload {
 
     message AddElements {
       repeated TimestampedElement elements = 1;
+      string tag = 2;
     }
   }
 

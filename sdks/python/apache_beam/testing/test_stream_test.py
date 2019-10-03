@@ -125,6 +125,33 @@ class TestStreamTest(unittest.TestCase):
 
     p.run()
 
+  def test_multiple_outputs(self):
+    print('file', beam.__file__)
+    test_stream = (TestStream()
+                   .add_elements(['a', 'b', 'c'], 'letters')
+                   .add_elements(['1', '2', '3'], 'numbers'))
+
+    class RecordFn(beam.DoFn):
+      def process(self, element=beam.DoFn.ElementParam,
+                  timestamp=beam.DoFn.TimestampParam):
+        yield (element, timestamp)
+
+    options = PipelineOptions()
+    options.view_as(StandardOptions).streaming = True
+    p = TestPipeline(options=options)
+    my_record_fn = RecordFn()
+    records = p | test_stream | beam.ParDo(my_record_fn)
+
+    assert_that(records, equal_to([
+        ('a', timestamp.Timestamp(0)),
+        ('b', timestamp.Timestamp(0)),
+        ('c', timestamp.Timestamp(0)),
+        ('1', timestamp.Timestamp(0)),
+        ('2', timestamp.Timestamp(0)),
+        ('r', timestamp.Timestamp(0))]))
+
+    p.run()
+
   def test_gbk_execution_no_triggers(self):
     test_stream = (TestStream()
                    .advance_watermark_to(10)
