@@ -189,7 +189,8 @@ class _TestStreamRootBundleProvider(RootBundleProvider):
         pvalue.PBegin(self._applied_ptransform.transform.pipeline))
     # Explicitly set timestamp to MIN_TIMESTAMP to ensure that we hold the
     # watermark.
-    bundle.add(GlobalWindows.windowed_value(0, timestamp=MIN_TIMESTAMP))
+    bundle.add(GlobalWindows.windowed_value(test_stream.begin(),
+                                            timestamp=MIN_TIMESTAMP))
     bundle.commit(None)
     return [bundle]
 
@@ -330,21 +331,23 @@ class _TestStreamEvaluator(_TransformEvaluator):
         side_inputs)
 
   def start_bundle(self):
-    self.current_index = -1
+    self.current_index = 0
     self.watermark = MIN_TIMESTAMP
     self.bundles = []
-    self.next_token = -1
+
+    self._tagged_receivers = _TaggedReceivers(self._evaluation_context)
+    for output_tag in self._applied_ptransform.outputs:
+      output_pcollection = pvalue.PCollection(None, tag=output_tag)
+      output_pcollection.producer = self._applied_ptransform
+      self._tagged_receivers[output_tag] = (
+          self._evaluation_context.create_bundle(output_pcollection))
+      self._tagged_receivers[output_tag].tag = output_tag
 
   def process_element(self, element):
-    index = element.value
-    self.watermark = element.timestamp
-    assert isinstance(index, int)
-    self.current_index = index
-    for event in self.test_stream.events(self.current_index):
+    if self.test_stream._pass_through:
+      bundle = self._tagged_receivers[None]
+      event = element.value
       if isinstance(event, ElementEvent):
-        assert len(self._outputs) == 1
-        output_pcollection = list(self._outputs)[0]
-        bundle = self._evaluation_context.create_bundle(output_pcollection)
         for tv in event.timestamped_values:
           bundle.output(
               GlobalWindows.windowed_value(tv.value, timestamp=tv.timestamp))
@@ -352,6 +355,32 @@ class _TestStreamEvaluator(_TransformEvaluator):
       elif isinstance(event, WatermarkEvent):
         assert event.new_watermark >= self.watermark
         self.watermark = event.new_watermark
+      else:
+        raise ValueError('Invalid TestStream event: %s.' % event)
+      return
+
+    index = element.value
+    self.watermark = element.timestamp
+    self.current_index = index
+    for event in self.test_stream.events(self.current_index):
+      if isinstance(event, ElementEvent):
+        bundle = self._tagged_receivers[event.tag]
+        if event.tag and 'test_stream' in event.tag:
+          # print('outputting {}'.format(event))
+          bundle.output(GlobalWindows.windowed_value(event))
+        else:
+          for tv in event.timestamped_values:
+            bundle.output(
+                GlobalWindows.windowed_value(tv.value, timestamp=tv.timestamp))
+        self.bundles.append(bundle)
+      elif isinstance(event, WatermarkEvent):
+        assert event.new_watermark >= self.watermark
+        if event.tag and 'test_stream' in event.tag:
+          bundle = self._tagged_receivers[event.tag]
+          bundle.output(GlobalWindows.windowed_value(event))
+          self.bundles.append(bundle)
+        else:
+          self.watermark = event.new_watermark
       elif isinstance(event, ProcessingTimeEvent):
         self._evaluation_context._watermark_manager._clock.advance_time(
             event.advance_by)
@@ -360,15 +389,19 @@ class _TestStreamEvaluator(_TransformEvaluator):
 
   def finish_bundle(self):
     unprocessed_bundles = []
-    hold = None
+    hold = self.watermark if self.test_stream._pass_through else None
     next_index = self.test_stream.next(self.current_index)
-    if next_index != self.test_stream.end():
+    if not self.test_stream.end(next_index) and not self.test_stream._pass_through:
       unprocessed_bundle = self._evaluation_context.create_bundle(
           pvalue.PBegin(self._applied_ptransform.transform.pipeline))
       unprocessed_bundle.add(GlobalWindows.windowed_value(
           next_index, timestamp=self.watermark))
       unprocessed_bundles.append(unprocessed_bundle)
       hold = self.watermark
+
+    # if self.test_stream._pass_through:
+    #   print('{} hold: {}'.format(self._applied_ptransform.full_label, hold))
+    #   print(self.bundles)
 
     return TransformResult(
         self, self.bundles, unprocessed_bundles, None, {None: hold})

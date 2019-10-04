@@ -502,6 +502,7 @@ message TestStreamPayload {
 
     message AdvanceWatermark {
       int64 new_watermark = 1;
+      string tag = 2;
     }
 
     message AdvanceProcessingTime {
@@ -517,7 +518,6 @@ message TestStreamPayload {
   message TimestampedElement {
     bytes encoded_element = 1;
     int64 timestamp = 2;
-    string tag = 3;
   }
 }
 // The payload for the special-but-not-primitive WriteFiles transform.

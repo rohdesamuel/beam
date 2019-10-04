@@ -22,6 +22,7 @@ from __future__ import absolute_import
 import unittest
 
 import apache_beam as beam
+from apache_beam import pvalue
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import StandardOptions
 from apache_beam.testing.test_pipeline import TestPipeline
@@ -127,7 +128,8 @@ class TestStreamTest(unittest.TestCase):
 
   def test_multiple_outputs(self):
     test_stream = (TestStream()
-                   .advance_watermark_to(0)
+                   .advance_watermark_to(0, 'letters')
+                   .advance_watermark_to(0, 'numbers')
                    .add_elements(['a', 'b', 'c'], 'letters')
                    .add_elements(['1', '2', '3'], 'numbers'))
 
@@ -153,6 +155,87 @@ class TestStreamTest(unittest.TestCase):
         ('1', timestamp.Timestamp(0)),
         ('2', timestamp.Timestamp(0)),
         ('3', timestamp.Timestamp(0))]), label='check numbers')
+
+    p.run()
+
+  def test_child_test_streams(self):
+    test_stream = (TestStream()
+                   .advance_watermark_to(10, 'test_stream_letters')
+                   .advance_watermark_to(20, 'test_stream_numbers')
+                   .add_elements(['a', 'b', 'c'], 'test_stream_letters')
+                   .add_elements(['1', '2', '3'], 'test_stream_numbers')
+                   .advance_watermark_to(timestamp.MAX_TIMESTAMP, 'test_stream_letters')
+                   .advance_watermark_to(timestamp.MAX_TIMESTAMP, 'test_stream_numbers'))
+
+    class RecordFn(beam.DoFn):
+      def process(self, element=beam.DoFn.ElementParam,
+                  timestamp=beam.DoFn.TimestampParam):
+        yield (element, timestamp)
+
+    options = PipelineOptions()
+    options.view_as(StandardOptions).streaming = True
+    p = TestPipeline(options=options)
+    pcoll = p | test_stream.with_outputs()
+
+    letters = (pcoll.test_stream_letters
+               | 'Letters TestStream' >> TestStream()
+               | 'Letters ParDo' >> beam.ParDo(RecordFn()))
+
+    numbers = (pcoll.test_stream_numbers
+               | 'Numbers TestStream' >> TestStream()
+               | 'Numbers ParDo' >> beam.ParDo(RecordFn()))
+
+    assert_that(letters, equal_to([
+        ('a', timestamp.Timestamp(10)),
+        ('b', timestamp.Timestamp(10)),
+        ('c', timestamp.Timestamp(10))]), label='check letters')
+
+    assert_that(numbers, equal_to([
+        ('1', timestamp.Timestamp(20)),
+        ('2', timestamp.Timestamp(20)),
+        ('3', timestamp.Timestamp(20))]), label='check numbers')
+
+    p.run()
+
+  def test_child_test_streams_with_multi_outputs(self):
+    test_stream = (TestStream()
+                   .advance_watermark_to(0, 'test_stream_main')
+                   .add_elements(['a', 'b', 'c', 1, 2, 3],
+                                 'test_stream_main')
+                   .advance_watermark_to(timestamp.MAX_TIMESTAMP,
+                                         'test_stream_main'))
+
+    class RecordFn(beam.DoFn):
+      def process(self, element=beam.DoFn.ElementParam,
+                  timestamp=beam.DoFn.TimestampParam):
+        yield (element, timestamp)
+
+    def mux(e):
+      if isinstance(e, int):
+        yield pvalue.TaggedOutput('numbers', e)
+      elif isinstance(e, str):
+        yield pvalue.TaggedOutput('letters', e)
+
+    options = PipelineOptions()
+    options.view_as(StandardOptions).streaming = True
+    p = TestPipeline(options=options)
+
+    pcoll = p | test_stream.with_outputs()
+    main_pcoll = (pcoll.test_stream_main
+                  | 'Child TestStream' >> TestStream()
+                  | 'Multiplexer' >> beam.ParDo(mux).with_outputs())
+    letters = main_pcoll.letters | 'Letters ParDo' >> beam.ParDo(RecordFn())
+    numbers = main_pcoll.numbers | 'Numbers ParDo' >> beam.ParDo(RecordFn())
+
+    assert_that(letters, equal_to([
+        ('a', timestamp.Timestamp(0)),
+        ('b', timestamp.Timestamp(0)),
+        ('c', timestamp.Timestamp(0))]), label='check letters')
+
+    assert_that(numbers, equal_to([
+        (1, timestamp.Timestamp(0)),
+        (2, timestamp.Timestamp(0)),
+        (3, timestamp.Timestamp(0))]), label='check numbers')
 
     p.run()
 
