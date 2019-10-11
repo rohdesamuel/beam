@@ -67,7 +67,7 @@ class WatermarkManager(object):
       assert input_pvalue.producer or isinstance(input_pvalue, pvalue.PBegin)
       if input_pvalue.producer:
         input_transform_watermarks.append(
-            self.get_watermarks(input_pvalue.producer))
+            (input_pvalue.tag, self.get_watermarks(input_pvalue.producer)))
     self._transform_to_watermarks[
         applied_ptransform].update_input_transform_watermarks(
             input_transform_watermarks)
@@ -113,6 +113,9 @@ class WatermarkManager(object):
     # watermarks and should not trigger downstream execution.
     for output in output_committed_bundles:
       if output.has_elements():
+        # print([(e.value, e.timestamp) for b in output_committed_bundles for e in b.get_elements_iterable()])
+        # print(output.pcollection)
+        # print(self._value_to_consumers)
         if output.pcollection in self._value_to_consumers:
           consumers = self._value_to_consumers[output.pcollection]
           for consumer in consumers:
@@ -132,6 +135,7 @@ class WatermarkManager(object):
   def _refresh_watermarks(self, applied_ptransform, side_inputs_container):
     assert isinstance(applied_ptransform, pipeline.AppliedPTransform)
     unblocked_tasks = []
+    # print('refreshing', applied_ptransform)
     tw = self.get_watermarks(applied_ptransform)
     if tw.refresh():
       for pval in applied_ptransform.outputs.values():
@@ -139,6 +143,7 @@ class WatermarkManager(object):
           pvals = (v for v in pval)
         else:
           pvals = (pval,)
+        # print(pvals)
         for v in pvals:
           if v in self._value_to_consumers:  # If there are downstream consumers
             consumers = self._value_to_consumers[v]
@@ -176,18 +181,23 @@ class _TransformWatermarks(object):
     self._clock = clock
     self._keyed_states = keyed_states
     self._input_transform_watermarks = []
+    self._tags = []
     self._input_watermark = WatermarkManager.WATERMARK_NEG_INF
     self._output_watermark = WatermarkManager.WATERMARK_NEG_INF
     self._keyed_earliest_holds = {}
     self._pending = set()  # Scheduled bundles targeted for this transform.
     self._fired_timers = set()
     self._lock = threading.Lock()
+    self._holds_changed = False
 
     self._label = str(transform)
 
   def update_input_transform_watermarks(self, input_transform_watermarks):
+    tags = [e[0] for e in input_transform_watermarks]
+    watermarks = [e[1] for e in input_transform_watermarks]
     with self._lock:
-      self._input_transform_watermarks = input_transform_watermarks
+      self._input_transform_watermarks = watermarks
+      self._tags = tags
 
   def update_timers(self, completed_timers):
     with self._lock:
@@ -207,9 +217,15 @@ class _TransformWatermarks(object):
   def hold(self, keyed_earliest_holds):
     with self._lock:
       for key, hold_value in keyed_earliest_holds.items():
+        if key in self._keyed_earliest_holds:
+          self._holds_changed |= hold_value != self._keyed_earliest_holds[key]
+        else:
+          self._holds_changed = True
         self._keyed_earliest_holds[key] = hold_value
         if (hold_value is None or
             hold_value == WatermarkManager.WATERMARK_POS_INF):
+          if key in self._keyed_earliest_holds:
+            self._holds_changed = True
           del self._keyed_earliest_holds[key]
 
   def add_pending(self, pending):
@@ -250,8 +266,22 @@ class _TransformWatermarks(object):
       if has_pending_elements:
         pending_holder = min_pending_timestamp - TIME_GRANULARITY
 
-      input_watermarks = [
-          tw.output_watermark for tw in self._input_transform_watermarks]
+      # print(self._tags)
+      input_watermarks = []
+      for i in range(len(self._tags)):
+        tag = self._tags[i]
+        tw = self._input_transform_watermarks[i]
+        # print(self._label)
+        # print(tw._keyed_earliest_holds)
+        if tag in tw._keyed_earliest_holds:
+          watermark = tw._keyed_earliest_holds[tag]
+          input_watermarks.append(watermark)
+          # print('GET YOUR WATERMARK', watermark)
+        else:
+          input_watermarks.append(tw.output_watermark)
+
+      # input_watermarks = [
+      #     tw.output_watermark for tw in self._input_transform_watermarks]
       input_watermarks.append(WatermarkManager.WATERMARK_POS_INF)
       producer_watermark = min(input_watermarks)
 
@@ -263,8 +293,21 @@ class _TransformWatermarks(object):
           earliest_hold = hold
       new_output_watermark = min(self._input_watermark, earliest_hold)
 
-      advanced = new_output_watermark > self._output_watermark
+      advanced = new_output_watermark > self._output_watermark or self._holds_changed
       self._output_watermark = new_output_watermark
+      self._holds_changed = False
+
+      # print('({}) watermarks....'.format(self._label))
+      # print('\tinput_watermark =', self._input_watermark)
+      # print('\toutput_watermark =', self._output_watermark)
+      # print('\tproducer_watermark =', producer_watermark)
+      # print('\tpending_holder =', pending_holder)
+      # print('\tpending_elements =', [(e.value, e.timestamp) for b in self._pending for e in b.get_elements_iterable()])
+      # print('\thas_pending_elements =', has_pending_elements)
+      # print('\tmin_pending_timestamp =', min_pending_timestamp)
+      # print('\tearliest_hold =', earliest_hold)
+      # print('\tadvanced =', advanced)
+
       return advanced
 
   @property
