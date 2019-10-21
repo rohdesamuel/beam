@@ -31,18 +31,74 @@ def to_api_state(state):
     return beam_interactive_api_pb2.StatusResponse.PAUSED
   return beam_interactive_api_pb2.StatusResponse.RUNNING
 
+
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import ssl
+
+
+class ForwardingServer:
+  class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+      self.send_response(200)
+      self.send_header('Content-type', 'text/html')
+      self.send_header('Access-Control-Allow-Origin', '*')
+      self.end_headers()
+      self.wfile.write('OK'.encode('utf8'))
+
+      import grpc
+      from apache_beam.portability.api import beam_interactive_api_pb2
+      from apache_beam.portability.api import beam_interactive_api_pb2_grpc
+
+      channel = grpc.insecure_channel('localhost:12345')
+      stub = beam_interactive_api_pb2_grpc.InteractiveServiceStub(channel)
+      stub.Stop(beam_interactive_api_pb2.StopRequest())
+
+    def log_message(self, format, *args):
+      return
+
+
+  def __init__(self, port=12346):
+    self._port = port
+    self._httpd = HTTPServer(('localhost', self._port), ForwardingServer.Handler)
+
+  def start(self):
+    import threading
+    def run():
+      self._httpd.serve_forever()
+    self._t = threading.Thread(target=run)
+    self._t.start()
+
+  def stop(self):
+    self._httpd.shutdown()
+    self._httpd.server_close()
+    self._t.join()
+
+
 class InteractiveStreamController(InteractiveServiceServicer):
   def __init__(self, endpoint, streaming_cache):
     self._endpoint = endpoint
+    self._streaming_cache = streaming_cache
+    self._state = 'STOPPED'
+    self._playback_speed = 1.0
+    self.result = None
+
+  def start(self, result):
+    self.result = result
+
     self._server = grpc.server(ThreadPoolExecutor(max_workers=10))
     beam_interactive_api_pb2_grpc.add_InteractiveServiceServicer_to_server(
         self, self._server)
     self._server.add_insecure_port(self._endpoint)
-    self._server.start()
+    self._forwarding_server = ForwardingServer()
 
-    self._streaming_cache = streaming_cache
-    self._state = 'STOPPED'
-    self._playback_speed = 1.0
+    self._server.start()
+    self._forwarding_server.start()
+
+  def stop(self):
+    self._forwarding_server.stop()
+    self._server.stop(0.5)
+    self._server = None
+    self._forwarding_server = None
 
   def Start(self, request, context):
     """Requests that the Service starts emitting elements.
@@ -56,8 +112,12 @@ class InteractiveStreamController(InteractiveServiceServicer):
   def Stop(self, request, context):
     """Requests that the Service stop emitting elements.
     """
-    self._next_state('STOPPED')
-    return beam_interactive_api_pb2.StartResponse()
+    if self.result:
+      print('stopping job')
+      self.result.cancel()
+      self._next_state('STOPPED')
+      self.result = None
+    return beam_interactive_api_pb2.StopResponse()
 
   def Pause(self, request, context):
     """Requests that the Service pause emitting elements.
