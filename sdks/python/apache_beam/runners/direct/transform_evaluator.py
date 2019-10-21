@@ -58,7 +58,6 @@ from apache_beam.transforms.trigger import _ListStateTag
 from apache_beam.transforms.trigger import create_trigger_driver
 from apache_beam.transforms.userstate import get_dofn_specs
 from apache_beam.transforms.userstate import is_stateful_dofn
-from apache_beam.transforms.watermark_reporter import WatermarkReporter
 from apache_beam.transforms.window import GlobalWindows
 from apache_beam.transforms.window import WindowedValue
 from apache_beam.typehints.typecheck import TypeCheckError
@@ -564,21 +563,6 @@ class _TaggedReceivers(dict):
     return self._null_receiver
 
 
-class DirectWatermarkReporter(WatermarkReporter):
-  def __init__(self, output_watermark):
-    self.held_watermark = None
-    self.output_watermark = output_watermark
-
-  def __call__(self, value=None):
-    if value:
-      self.held_watermark = min(self.held_watermark or MAX_TIMESTAMP, value)
-      print('reported', self.held_watermark)
-    return self.output_watermark
-
-  def watermark(self):
-    return self.held_watermark
-
-
 class _ParDoEvaluator(_TransformEvaluator):
   """TransformEvaluator for ParDo transform."""
 
@@ -631,7 +615,6 @@ class _ParDoEvaluator(_TransformEvaluator):
         self.user_timer_map['user/%s' % timer_spec.name] = timer_spec
 
 
-    self.reporter = DirectWatermarkReporter(watermarks.output_watermark)
     self.runner = DoFnRunner(
         dofn, args, kwargs,
         self._side_inputs,
@@ -639,8 +622,7 @@ class _ParDoEvaluator(_TransformEvaluator):
         tagged_receivers=self._tagged_receivers,
         step_name=self._applied_ptransform.full_label,
         state=DoFnState(self._counter_factory),
-        user_state_context=self.user_state_context,
-        watermark_reporter_param=self.reporter)
+        user_state_context=self.user_state_context)
     self.runner.start()
 
   def process_timer(self, timer_firing):
