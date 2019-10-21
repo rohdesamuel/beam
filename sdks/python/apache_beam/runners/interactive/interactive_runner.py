@@ -53,7 +53,7 @@ class InteractiveRunner(runners.PipelineRunner):
                cache_dir=None,
                cache_format='text',
                render_option=None,
-               endpoint=''):
+               endpoint='localhost:12345'):
     """Constructor of InteractiveRunner.
 
     Args:
@@ -66,12 +66,13 @@ class InteractiveRunner(runners.PipelineRunner):
     """
     self._underlying_runner = (underlying_runner
                                or direct_runner.DirectRunner())
-    self._cache_manager = cache.FileBasedCacheManager(FileSystems.join(cache_dir, 'cache'), cache_format)
+    self._cache_manager = cache.FileBasedCacheManager(cache_dir, cache_format)
     self._renderer = pipeline_graph_renderer.get_renderer(render_option)
     self._in_session = False
 
-    streaming_cache = StreamingCache([TextBasedCache(cache_dir)])
-    self._interactive_stream_controller = InteractiveStreamController(endpoint, streaming_cache)
+    self._interactive_stream_controller = InteractiveStreamController(endpoint, None)
+    if cache_dir:
+      streaming_cache = StreamingCache([TextBasedCache(cache_dir)])
 
   def is_fnapi_compatible(self):
     # TODO(BEAM-8436): return self._underlying_runner.is_fnapi_compatible()
@@ -119,6 +120,9 @@ class InteractiveRunner(runners.PipelineRunner):
     # TODO(qinyeli, BEAM-646): Remove runner interception of apply.
     return self._underlying_runner.apply(transform, pvalueish, options)
 
+  def run(self, pipeline, options):
+    return self.run_pipeline(pipeline, options)
+
   def run_pipeline(self, pipeline, options):
     if not hasattr(self, '_desired_cache_labels'):
       self._desired_cache_labels = set()
@@ -155,8 +159,12 @@ class InteractiveRunner(runners.PipelineRunner):
         pipeline_graph_renderer=self._renderer)
     display.start_periodic_update()
     result = pipeline_to_execute.run()
+    self.result = result
+    self._interactive_stream_controller.start(result)
     result.wait_until_finish()
+    self._interactive_stream_controller.stop()
     display.stop_periodic_update()
+    print('Job done!')
 
     return PipelineResult(result, self, self._analyzer.pipeline_info(),
                           self._cache_manager, pcolls_to_pcoll_id)
