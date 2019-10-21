@@ -76,6 +76,7 @@ class DisplayManager(object):
 
     # _text_to_print keeps track of information to be displayed.
     self._text_to_print = collections.OrderedDict()
+    self._text_to_print['header'] = ()
     self._text_to_print['summary'] = (
         'Using %s cached PCollections\nExecuting %s of %s '
         'transforms.') % (
@@ -149,6 +150,43 @@ class DisplayManager(object):
           rendered_graph = self._renderer.render_pipeline_graph(
               self._pipeline_graph)
           display.display(display.HTML(rendered_graph))
+
+          input_form = """
+          <div style="background-color:gainsboro; border:solid black; width:300px; padding:20px;" id="interactive_stream_output"></div>
+          """
+
+          javascript = """
+          <script type="text/Javascript">
+              function handle_output(msg) {
+                console.log(msg)
+                if (msg.content.name == "stdout") {
+                  document.getElementById("interactive_stream_output").innerText = msg.content.text;
+                }
+              }
+              function stop_job(){
+                  const http = new XMLHttpRequest();
+                  const url = 'http://localhost:12346';
+                  http.open("GET", url);
+                  http.send();
+
+                  http.onreadystatechange = (e) => {
+                    console.log(http.responseText);
+                  }
+              }
+          </script>
+          """
+
+          display.display(display.HTML(
+            javascript
+          ))
+
+
+          display.display(display.HTML(
+            '<button>Start</button>'
+            '<button onclick="stop_job()">Stop</button>'
+            '<button>Pause</button>'
+            '<button>Step</button>'
+          ))
 
         _display_progress('Running...')
         for text in self._text_to_print.values():
