@@ -71,37 +71,6 @@ class Event(with_metaclass(ABCMeta, object)):
     return not self == other
 
 
-class TaggedElement(object):
-  def __init__(self, tag, timestamp, value):
-    self.tag = tag
-    self.timestamp = timestamp
-    self.value = value
-
-  def __eq__(self, other):
-    return (self.tag == other.tag and
-            self.timestamp == other.timestamp and
-            self.value == other.value)
-
-  def __lt__(self, other):
-    return self.timestamp < other.timestamp
-
-
-class TaggedElementEvent(Event):
-  """Element-producing test stream event."""
-
-  def __init__(self, elements):
-    self.elements = elements
-
-  def __eq__(self, other):
-    return self.elements == other.elements
-
-  def __hash__(self):
-    return hash(self.timestamped_values)
-
-  def __lt__(self, other):
-    return self.timestamped_values < other.timestamped_values
-
-
 class ElementEvent(Event):
   """Element-producing test stream event."""
 
@@ -179,7 +148,6 @@ class TestStream(PTransform):
     self._events = []
     self._endpoint = endpoint
     self._is_done = False
-    self._pass_through = False
 
   def get_windowing(self, unused_inputs):
     return core.Windowing(window.GlobalWindows())
@@ -192,8 +160,7 @@ class TestStream(PTransform):
     return _MultiTestStream(self, tags, main_tag)
 
   def expand(self, pbegin):
-    if not isinstance(pbegin, pvalue.PBegin):
-      self._pass_through = True
+    assert(isinstance(pbegin, pvalue.PBegin))
     self.pipeline = pbegin.pipeline
     return pvalue.PCollection(self.pipeline, is_bounded=False)
 
@@ -208,7 +175,6 @@ class TestStream(PTransform):
     elif isinstance(event, WatermarkEvent):
       if event.tag not in self.watermarks:
         self.watermarks[event.tag] = timestamp.MIN_TIMESTAMP
-      # print(event.tag, event.new_watermark, self.watermarks[event.tag])
       assert event.new_watermark > self.watermarks[event.tag], (
           'Watermark must strictly-monotonically advance.')
       self.watermarks[event.tag] = event.new_watermark
@@ -222,7 +188,7 @@ class TestStream(PTransform):
   def has_events(self):
     return len(self._events) > 0
 
-  def _events_from_rpc(self):
+  def _events_from_service(self):
     channel = grpc.insecure_channel(self._endpoint)
     stub = beam_interactive_api_pb2_grpc.InteractiveServiceStub(channel)
     request = beam_interactive_api_pb2.EventsRequest()
@@ -266,7 +232,7 @@ class TestStream(PTransform):
       return index + 1
     return 0
 
-  def add_elements(self, elements, tag=None):
+  def add_elements(self, elements, tag=None, event_timestamp=None):
     """Add elements to the TestStream.
 
     Elements added to the TestStream will be produced during pipeline execution.
@@ -291,8 +257,9 @@ class TestStream(PTransform):
             TimestampedValue(element.value, element.timestamp))
       else:
         # Add elements with timestamp equal to current watermark.
-        timestamped_values.append(
-            TimestampedValue(element, self.watermarks[tag]))
+        if event_timestamp == None:
+          event_timestamp = self.watermarks[tag]
+        timestamped_values.append(TimestampedValue(element, event_timestamp))
     self._add(ElementEvent(timestamped_values, tag))
     return self
 
