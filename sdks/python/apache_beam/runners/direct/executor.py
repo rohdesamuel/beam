@@ -24,6 +24,7 @@ import itertools
 import logging
 import sys
 import threading
+import time
 import traceback
 from builtins import object
 from builtins import range
@@ -115,7 +116,11 @@ class _ExecutorService(object):
 
   def await_completion(self):
     for worker in self.workers:
-      worker.join()
+      while True:
+        worker.join(0.02)
+        time.sleep(0)
+        if not worker.isAlive():
+          break
 
   def shutdown(self):
     self.shutdown_requested = True
@@ -450,6 +455,8 @@ class _ExecutorServiceParallelExecutor(object):
 
   def request_shutdown(self):
     self.executor_service.shutdown()
+    self.visible_updates.offer(
+        _ExecutorServiceParallelExecutor._VisibleExecutorUpdate())
 
   def schedule_consumers(self, committed_bundle):
     if committed_bundle.pcollection in self.value_to_consumers:
@@ -503,10 +510,12 @@ class _ExecutorServiceParallelExecutor(object):
       # to be correctly propagated.
       while True:
         try:
-          item = self._queue.get(timeout=1)
+          item = self._queue.get(timeout=0.01)
           self._queue.task_done()
           return item
         except queue.Empty:
+          import time
+          time.sleep(0)
           pass
 
     def offer(self, item):
