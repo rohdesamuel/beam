@@ -39,7 +39,6 @@ from apache_beam.transforms import DoFn
 from apache_beam.transforms import core
 from apache_beam.transforms import userstate
 from apache_beam.transforms.core import RestrictionProvider
-from apache_beam.transforms.watermark_reporter import WatermarkReporter
 from apache_beam.transforms.window import GlobalWindow
 from apache_beam.transforms.window import TimestampedValue
 from apache_beam.transforms.window import WindowFn
@@ -330,8 +329,7 @@ class DoFnInvoker(object):
       context=None, side_inputs=None, input_args=None, input_kwargs=None,
       process_invocation=True,
       user_state_context=None,
-      bundle_finalizer_param=None,
-      watermark_reporter_param=None):
+      bundle_finalizer_param=None):
     """ Creates a new DoFnInvoker based on given arguments.
 
     Args:
@@ -355,8 +353,6 @@ class DoFnInvoker(object):
                             Stateful DoFn.
         bundle_finalizer_param: The param that passed to a process method, which
                                 allows a callback to be registered.
-        watermark_reporter_param: The param to pass to the process method that
-                                  controls the lower bound watermark.
     """
     side_inputs = side_inputs or []
     default_arg_values = signature.process_method.defaults
@@ -369,7 +365,7 @@ class DoFnInvoker(object):
       return PerWindowInvoker(
           output_processor,
           signature, context, side_inputs, input_args, input_kwargs,
-          user_state_context, bundle_finalizer_param, watermark_reporter_param)
+          user_state_context, bundle_finalizer_param)
 
   def invoke_process(self, windowed_value, restriction_tracker=None,
                      output_processor=None,
@@ -450,7 +446,7 @@ class PerWindowInvoker(DoFnInvoker):
 
   def __init__(self, output_processor, signature, context,
                side_inputs, input_args, input_kwargs, user_state_context,
-               bundle_finalizer_param, watermark_reporter):
+               bundle_finalizer_param):
     super(PerWindowInvoker, self).__init__(output_processor, signature)
     self.side_inputs = side_inputs
     self.context = context
@@ -466,7 +462,6 @@ class PerWindowInvoker(DoFnInvoker):
     self.current_windowed_value = None
     self.bundle_finalizer_param = bundle_finalizer_param
     self.is_key_param_required = False
-    self.watermark_reporter = watermark_reporter
 
     # Try to prepare all the arguments that can just be filled in
     # without any additional work. in the process function.
@@ -524,8 +519,6 @@ class PerWindowInvoker(DoFnInvoker):
       elif isinstance(d, core.DoFn.TimerParam):
         args_with_placeholders.append(ArgPlaceholder(d))
       elif isinstance(d, type) and core.DoFn.BundleFinalizerParam == d:
-        args_with_placeholders.append(ArgPlaceholder(d))
-      elif d == core.DoFn.WatermarkReporterParam:
         args_with_placeholders.append(ArgPlaceholder(d))
       else:
         # If no more args are present then the value must be passed via kwarg
@@ -650,8 +643,6 @@ class PerWindowInvoker(DoFnInvoker):
             self.user_state_context.get_timer(p.timer_spec, key, window))
       elif core.DoFn.BundleFinalizerParam == p:
         args_for_process[i] = self.bundle_finalizer_param
-      elif p == core.DoFn.WatermarkReporterParam:
-        args_for_process[i] = self.watermark_reporter or WatermarkReporter()
 
     if additional_kwargs:
       if kwargs_for_process is None:
@@ -726,8 +717,7 @@ class DoFnRunner(Receiver):
                state=None,
                scoped_metrics_container=None,
                operation_name=None,
-               user_state_context=None,
-               watermark_reporter_param=None):
+               user_state_context=None):
     """Initializes a DoFnRunner.
 
     Args:
@@ -744,7 +734,6 @@ class DoFnRunner(Receiver):
       operation_name: The system name assigned by the runner for this operation.
       user_state_context: The UserStateContext instance for the current
                           Stateful DoFn.
-      watermark_reporter_param: The WatermarkReporter instance for this DoFn.
     """
     # Need to support multiple iterations.
     side_inputs = list(side_inputs)
@@ -781,8 +770,7 @@ class DoFnRunner(Receiver):
     self.do_fn_invoker = DoFnInvoker.create_invoker(
         do_fn_signature, output_processor, self.context, side_inputs, args,
         kwargs, user_state_context=user_state_context,
-        bundle_finalizer_param=self.bundle_finalizer_param,
-        watermark_reporter_param=watermark_reporter_param)
+        bundle_finalizer_param=self.bundle_finalizer_param)
 
   def receive(self, windowed_value):
     self.process(windowed_value)
