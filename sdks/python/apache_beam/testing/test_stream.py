@@ -26,9 +26,12 @@ import grpc
 from abc import ABCMeta
 from abc import abstractmethod
 from builtins import object
+from collections import namedtuple
 from functools import total_ordering
 
 from future.utils import with_metaclass
+
+import apache_beam as beam
 
 from apache_beam import coders
 from apache_beam import core
@@ -121,69 +124,37 @@ class ProcessingTimeEvent(Event):
   def __lt__(self, other):
     return self.advance_by < other.advance_by
 
-class _MultiTestStream(PTransform):
-  def __init__(self, test_stream, tags, main_tag):
-    super(_MultiTestStream, self).__init__(test_stream.label)
-    self._test_stream = test_stream
-    self._tags = tags
-    self._main_tag = main_tag
+
+class _WatermarkController(PTransform):
+  def get_windowing(self, _):
+    return core.Windowing(window.GlobalWindows())
 
   def expand(self, pcoll):
-    _ = pcoll | self._test_stream
-    return pvalue.DoOutputsTuple(
-        pcoll.pipeline, self._test_stream, self._tags, self._main_tag)
+    return pvalue.PCollection.from_(pcoll)
 
-class TestStream(PTransform):
+
+class _TestStream(PTransform):
   """Test stream that generates events on an unbounded PCollection of elements.
 
   Each event emits elements, advances the watermark or advances the processing
   time.  After all of the specified elements are emitted, ceases to produce
   output.
   """
-  def __init__(self, coder=coders.FastPrimitivesCoder, endpoint=''):
+  def __init__(self, coder=coders.FastPrimitivesCoder, events=[], endpoint=''):
     assert coder is not None
     self.coder = coder
-    self.watermarks = { None: timestamp.MIN_TIMESTAMP }
-    self.output_tags = set()
-    self._events = []
+    self._events = events
     self._endpoint = endpoint
     self._is_done = False
 
   def get_windowing(self, unused_inputs):
     return core.Windowing(window.GlobalWindows())
 
-  def with_outputs(self, *tags, **main_kw):
-    main_tag = main_kw.pop('main', None)
-    if main_kw:
-      raise ValueError('Unexpected keyword arguments: %s' %
-                       list(main_kw))
-    return _MultiTestStream(self, tags, main_tag)
-
-  def expand(self, pbegin):
-    assert(isinstance(pbegin, pvalue.PBegin))
-    self.pipeline = pbegin.pipeline
-    return pvalue.PCollection(self.pipeline, is_bounded=False)
+  def expand(self, pcoll):
+    return pvalue.PCollection(pcoll.pipeline, is_bounded=False)
 
   def _infer_output_coder(self, input_type=None, input_coder=None):
     return self.coder
-
-  def _add(self, event):
-    if isinstance(event, ElementEvent):
-      for tv in event.timestamped_values:
-        assert tv.timestamp < timestamp.MAX_TIMESTAMP, (
-            'Element timestamp must be before timestamp.MAX_TIMESTAMP.')
-    elif isinstance(event, WatermarkEvent):
-      if event.tag not in self.watermarks:
-        self.watermarks[event.tag] = timestamp.MIN_TIMESTAMP
-      assert event.new_watermark > self.watermarks[event.tag], (
-          'Watermark must strictly-monotonically advance.')
-      self.watermarks[event.tag] = event.new_watermark
-    elif isinstance(event, ProcessingTimeEvent):
-      assert event.advance_by > 0, (
-          'Must advance processing time by positive amount.')
-    else:
-      raise ValueError('Unknown event: %s' % event)
-    self._events.append(event)
 
   def has_events(self):
     return len(self._events) > 0
@@ -216,8 +187,7 @@ class TestStream(PTransform):
   def events(self, index):
     if self._endpoint:
       return self._events_from_service()
-    else:
-      return self._events_from_script(index)
+    return self._events_from_script(index)
 
   def begin(self):
     return 0
@@ -225,12 +195,92 @@ class TestStream(PTransform):
   def end(self, index):
     if self._endpoint:
       return self._is_done
-    return index == len(self._events)
+    return index >= len(self._events)
 
   def next(self, index):
-    if not self._endpoint:
-      return index + 1
-    return 0
+    if self._endpoint:
+      return 0
+    return index + 1
+
+
+class TestStream(PTransform):
+  """Test stream that generates events on an unbounded PCollection of elements.
+
+  Each event emits elements, advances the watermark or advances the processing
+  time.  After all of the specified elements are emitted, ceases to produce
+  output.
+  """
+  def __init__(self, coder=coders.FastPrimitivesCoder, endpoint=''):
+    assert coder is not None
+    self.coder = coder
+    self.watermarks = { None: timestamp.MIN_TIMESTAMP }
+    self._events = []
+    self._endpoint = endpoint
+    self.output_tags = set()
+
+  def get_windowing(self, unused_inputs):
+    return core.Windowing(window.GlobalWindows())
+
+  def with_outputs(self, *tags, **main_kw):
+    main_tag = main_kw.pop('main', None)
+    if main_kw:
+      raise ValueError('Unexpected keyword arguments: %s' %
+                       list(main_kw))
+    for tag in tags:
+      self.output_tags.add(tag)
+    return namedtuple('Output', list(self.output_tags))
+
+  def expand(self, pbegin):
+    assert(isinstance(pbegin, pvalue.PBegin))
+    self.pipeline = pbegin.pipeline
+    self.outputs = {}
+
+    watermark_starts = []
+    watermark_stops = []
+    for tag in self.output_tags:
+      event = WatermarkEvent(
+          timestamp.MIN_TIMESTAMP + timestamp.TIME_GRANULARITY, tag)
+      watermark_starts.append(event)
+
+      event = WatermarkEvent(timestamp.MAX_TIMESTAMP, tag)
+      watermark_stops.append(event)
+    self._events = watermark_starts + self._events + watermark_stops
+
+    def mux(x):
+      assert(isinstance(x, (ElementEvent, WatermarkEvent)),
+             'Received unknown TestStream event')
+      yield pvalue.TaggedOutput(x.tag, x)
+
+    mux_output = (pbegin
+                  | _TestStream(events=self._events)
+                  | 'TestStream Multiplexer' >> beam.ParDo(mux).with_outputs())
+
+    for tag in self.output_tags:
+      label = '_WatermarkController[{}]'.format(tag)
+      self.outputs[tag] = (mux_output[tag] | label >> _WatermarkController())
+    tuple_names = list(self.output_tags)
+    return namedtuple('TestStreamOutput', tuple_names)(*self.outputs.values())
+
+  def _infer_output_coder(self, input_type=None, input_coder=None):
+    return self.coder
+
+  def _add(self, event):
+    if isinstance(event, ElementEvent):
+      for tv in event.timestamped_values:
+        assert tv.timestamp < timestamp.MAX_TIMESTAMP, (
+            'Element timestamp must be before timestamp.MAX_TIMESTAMP.')
+    elif isinstance(event, WatermarkEvent):
+      if event.tag not in self.watermarks:
+        self.watermarks[event.tag] = timestamp.MIN_TIMESTAMP
+      assert event.new_watermark > self.watermarks[event.tag], (
+          'Watermark must strictly-monotonically advance.')
+      self.watermarks[event.tag] = event.new_watermark
+    elif isinstance(event, ProcessingTimeEvent):
+      assert event.advance_by > 0, (
+          'Must advance processing time by positive amount.')
+    else:
+      raise ValueError('Unknown event: %s' % event)
+    self._events.append(event)
 
   def add_elements(self, elements, tag=None, event_timestamp=None):
     """Add elements to the TestStream.
@@ -244,6 +294,7 @@ class TestStream(PTransform):
     element.  The windows of a given WindowedValue are ignored by the
     TestStream.
     """
+    self.output_tags.add(tag)
     timestamped_values = []
     if tag not in self.watermarks:
       self.watermarks[tag] = timestamp.MIN_TIMESTAMP
@@ -270,6 +321,7 @@ class TestStream(PTransform):
     value and should be given as an int, float or utils.timestamp.Timestamp
     object.
     """
+    self.output_tags.add(tag)
     self._add(WatermarkEvent(new_watermark, tag))
     return self
 
