@@ -63,7 +63,8 @@ def attempt_to_run_background_caching_job(runner, user_pipeline, options=None):
         runner,
         options)
     background_caching_job_result = beam.pipeline.Pipeline.from_runner_api(
-        instr.pin(runner_pipeline).background_caching_pipeline_proto(),
+        instr.build_pipeline_instrument(
+            runner_pipeline).background_caching_pipeline_proto(),
         runner,
         options).run()
     ie.current_env().set_pipeline_result(user_pipeline,
