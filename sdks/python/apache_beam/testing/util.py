@@ -157,6 +157,7 @@ def equal_to_per_window(expected_window_to_elements):
 def equal_to(expected):
 
   def _equal(actual):
+    expected_list = list(expected)
 
     # Try to compare actual and expected by sorting. This fails with a
     # TypeError in Python 3 if different types are present in the same
