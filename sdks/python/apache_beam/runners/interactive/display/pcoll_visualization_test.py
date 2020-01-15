@@ -117,16 +117,14 @@ class PCollectionVisualizationTest(unittest.TestCase):
     fake_pipeline_result = runner.PipelineResult(runner.PipelineState.RUNNING)
     ie.current_env().set_pipeline_result(
         self._p,
-        fake_pipeline_result,
-        is_main_job=True)
+        fake_pipeline_result)
     # When job is running, the dynamic plotting will not be stopped.
     self.assertFalse(ie.current_env().is_terminated(self._p))
 
     fake_pipeline_result = runner.PipelineResult(runner.PipelineState.DONE)
     ie.current_env().set_pipeline_result(
         self._p,
-        fake_pipeline_result,
-        is_main_job=True)
+        fake_pipeline_result)
     # When job is done, the dynamic plotting will be stopped.
     self.assertTrue(ie.current_env().is_terminated(self._p))
 

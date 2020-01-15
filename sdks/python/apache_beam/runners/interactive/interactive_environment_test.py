@@ -111,8 +111,7 @@ class InteractiveEnvironmentTest(unittest.TestCase):
     with self.assertRaises(AssertionError) as ctx:
       ie.current_env().set_pipeline_result(NotPipeline(),
                                            runner.PipelineResult(
-                                               runner.PipelineState.RUNNING),
-                                           is_main_job=True)
+                                               runner.PipelineState.RUNNING))
       self.assertTrue('pipeline must be an instance of apache_beam.Pipeline '
                       'or its subclass' in ctx.exception)
 
@@ -123,8 +122,7 @@ class InteractiveEnvironmentTest(unittest.TestCase):
     with self.assertRaises(AssertionError) as ctx:
       ie.current_env().set_pipeline_result(
           self._p,
-          NotResult(),
-          is_main_job=True)
+          NotResult())
       self.assertTrue('result must be an instance of '
                       'apache_beam.runners.runner.PipelineResult or its '
                       'subclass' in ctx.exception)
@@ -140,8 +138,7 @@ class InteractiveEnvironmentTest(unittest.TestCase):
     pipeline_result = PipelineResultSubClass(runner.PipelineState.RUNNING)
     ie.current_env().set_pipeline_result(
         pipeline,
-        pipeline_result,
-        is_main_job=True)
+        pipeline_result)
     self.assertIs(ie.current_env().pipeline_result(pipeline), pipeline_result)
 
   def test_determine_terminal_state(self):
@@ -152,8 +149,7 @@ class InteractiveEnvironmentTest(unittest.TestCase):
                   runner.PipelineState.DRAINED):
       ie.current_env().set_pipeline_result(
           self._p,
-          runner.PipelineResult(state),
-          is_main_job=True)
+          runner.PipelineResult(state))
       self.assertTrue(ie.current_env().is_terminated(self._p))
     for state in (runner.PipelineState.UNKNOWN,
                   runner.PipelineState.STARTING,
@@ -165,16 +161,14 @@ class InteractiveEnvironmentTest(unittest.TestCase):
                   runner.PipelineState.UNRECOGNIZED):
       ie.current_env().set_pipeline_result(
           self._p,
-          runner.PipelineResult(state),
-          is_main_job=True)
+          runner.PipelineResult(state))
       self.assertFalse(ie.current_env().is_terminated(self._p))
 
   def test_evict_pipeline_result(self):
     pipeline_result = runner.PipelineResult(runner.PipelineState.DONE)
     ie.current_env().set_pipeline_result(
         self._p,
-        pipeline_result,
-        is_main_job=True)
+        pipeline_result)
     self.assertIs(ie.current_env().evict_pipeline_result(self._p),
                   pipeline_result)
     self.assertIs(ie.current_env().pipeline_result(self._p), None)
