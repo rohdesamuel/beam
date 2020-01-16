@@ -65,6 +65,43 @@ def assert_pipeline_proto_equal(test_case,
                           expected_pipeline_proto.root_transform_ids[0])
 
 
+def assert_pipeline_proto_contain_top_level_transform(
+    test_case,
+    pipeline_proto,
+    transform_label):
+  """Asserts the top level transforms contain a transform with the given
+   transform label."""
+  _assert_pipeline_proto_contains_top_level_transform(
+      test_case,
+      pipeline_proto,
+      transform_label,
+      True)
+
+def assert_pipeline_proto_not_contain_top_level_transform(
+    test_case,
+    pipeline_proto,
+    transform_label):
+  """Asserts the top level transforms do not contain a transform with the given
+   transform label."""
+  _assert_pipeline_proto_contains_top_level_transform(
+      test_case,
+      pipeline_proto,
+      transform_label,
+      False)
+
+def _assert_pipeline_proto_contains_top_level_transform(
+    test_case,
+    pipeline_proto,
+    transform_label,
+    contain):
+  top_level_transform_labels = pipeline_proto.components.transforms[
+      pipeline_proto.root_transform_ids[0]].subtransforms
+  test_case.assertEqual(
+      contain,
+      any([transform_label in top_level_transform_label
+           for top_level_transform_label in top_level_transform_labels]))
+
+
 def _assert_transform_equal(test_case,
                             expected_pipeline_proto,
                             expected_transform_id,
