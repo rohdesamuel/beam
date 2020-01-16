@@ -30,6 +30,7 @@ import logging
 import time
 import typing
 
+import grpc
 from google.protobuf import wrappers_pb2
 
 import apache_beam as beam
@@ -38,7 +39,9 @@ from apache_beam import typehints
 from apache_beam.internal.util import ArgumentPlaceholder
 from apache_beam.options.pipeline_options import DirectOptions
 from apache_beam.options.pipeline_options import StandardOptions
+from apache_beam.options.pipeline_options import TestOptions
 from apache_beam.options.value_provider import RuntimeValueProvider
+from apache_beam.portability.api import beam_runner_api_pb2_grpc
 from apache_beam.pvalue import PCollection
 from apache_beam.runners.direct.bundle_factory import BundleFactory
 from apache_beam.runners.direct.clock import RealClock
@@ -92,7 +95,8 @@ class SwitchingDirectRunner(PipelineRunner):
     # If there is only one tag there is no need to add the multiplexer.
     if len(transform.output_tags) == 1:
       return (pbegin
-              | _TestStream(transform.output_tags, events=transform._events)
+              | _TestStream(transform.output_tags, events=transform._events,
+                            coder=transform.coder)
               | _WatermarkController())
 
     # This multiplexing the  multiple output PCollections.
@@ -117,6 +121,7 @@ class SwitchingDirectRunner(PipelineRunner):
       outputs[tag] = (mux_output[tag] | label >> _WatermarkController())
 
     return outputs
+  apply_TestStream.__test__ = False
 
   def run_pipeline(self, pipeline, options):
 
@@ -161,13 +166,6 @@ class SwitchingDirectRunner(PipelineRunner):
     # FnApiRunner, and the pipeline was not meant to be run as streaming.
     use_fnapi_runner = (
         _FnApiRunnerSupportVisitor().accept(pipeline))
-
-    # Also ensure grpc is available.
-    try:
-      # pylint: disable=unused-import
-      import grpc
-    except ImportError:
-      use_fnapi_runner = False
 
     if use_fnapi_runner:
       from apache_beam.runners.portability.fn_api_runner import FnApiRunner
@@ -427,6 +425,15 @@ class BundleBasedDirectRunner(PipelineRunner):
     self.consumer_tracking_visitor = ConsumerTrackingPipelineVisitor()
     pipeline.visit(self.consumer_tracking_visitor)
 
+    test_stream_service_endpoint = \
+        options.view_as(TestOptions).test_stream_service_endpoint
+    if test_stream_service_endpoint:
+      channel = grpc.insecure_channel(test_stream_service_endpoint)
+      stub = beam_runner_api_pb2_grpc.TestStreamServiceStub(channel)
+      test_stream_event_stub = stub
+    else:
+      test_stream_event_stub = None
+
     evaluation_context = EvaluationContext(
         options,
         BundleFactory(stacked=options.view_as(DirectOptions)
@@ -435,7 +442,8 @@ class BundleBasedDirectRunner(PipelineRunner):
         self.consumer_tracking_visitor.value_to_consumers,
         self.consumer_tracking_visitor.step_names,
         self.consumer_tracking_visitor.views,
-        clock)
+        clock,
+        test_stream_event_stub)
 
     executor = Executor(self.consumer_tracking_visitor.value_to_consumers,
                         TransformEvaluatorRegistry(evaluation_context),
