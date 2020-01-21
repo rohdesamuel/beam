@@ -158,6 +158,8 @@ def show(*pcolls):
     if pcoll not in watched_pcollections:
       watch({re.sub(r'[\[\]\(\)]', '_', str(pcoll)): pcoll})
 
+  import warnings
+  warnings.filterwarnings('ignore', category=DeprecationWarning)
   # Attempt to run background caching job since we have the reference to the
   # user-defined pipeline.
   bcj.attempt_to_run_background_caching_job(runner, user_pipeline,
