@@ -363,7 +363,8 @@ class PipelineInstrument(object):
     if self.has_unbounded_sources:
       for source in self._unbounded_sources:
         self._write_cache(self._background_caching_pipeline,
-                          source.outputs[None])
+                          source.outputs[None],
+                          output_as_extended_target=False)
 
   def preprocess(self):
     """Pre-processes the pipeline.
@@ -411,7 +412,7 @@ class PipelineInstrument(object):
     v = PreprocessVisitor(self)
     self._pipeline.visit(v)
 
-  def _write_cache(self, pipeline, pcoll):
+  def _write_cache(self, pipeline, pcoll, output_as_extended_target=True):
     """Caches a cacheable PCollection.
 
     For the given PCollection, by appending sub transform part that materialize
@@ -434,7 +435,8 @@ class PipelineInstrument(object):
       label = '{}{}'.format(WRITE_CACHE, key)
       extended_target = pcoll | label >> cache.WriteCache(
           self._cache_manager, key)
-      self._extended_targets.add(extended_target)
+      if output_as_extended_target:
+        self._extended_targets.add(extended_target)
 
   def _read_cache(self, pipeline, pcoll, is_unbounded_source_output):
     """Reads a cached pvalue.
