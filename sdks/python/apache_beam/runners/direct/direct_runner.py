@@ -106,7 +106,8 @@ class SwitchingDirectRunner(PipelineRunner):
       else:
         yield event
     mux_output = (pbegin
-                  | _TestStream(transform.output_tags, events=transform._events)
+                  | _TestStream(transform.output_tags, events=transform._events,
+                                coder=transform.coder)
                   | 'TestStream Multiplexer' >> beam.ParDo(mux).with_outputs())
 
     # Apply a way to control the watermark per output. It is necessary to
