@@ -191,6 +191,116 @@ def show(*pcolls):
     ie.current_env().mark_pcollection_computed(pcolls)
 
 
+def collect(pcoll):
+  """Materializes the first n elements from a PCollection.
+  """
+  assert isinstance(pcoll, beam.pvalue.PCollection), (
+      '{} is not an apache_beam.pvalue.PCollection.'.format(pcoll))
+
+  user_pipeline = pcoll.pipeline
+  runner = user_pipeline.runner
+  if isinstance(runner, ir.InteractiveRunner):
+    runner = runner._underlying_runner
+
+  # Make sure that all PCollections to be shown are watched. If a PCollection
+  # has not been watched, make up a variable name for that PCollection and watch
+  # it. No validation is needed here because the watch logic can handle
+  # arbitrary variables.
+  watched_pcollections = set()
+  for watching in ie.current_env().watching():
+    for _, val in watching:
+      if hasattr(val, '__class__') and isinstance(val, beam.pvalue.PCollection):
+        watched_pcollections.add(val)
+  if pcoll not in watched_pcollections:
+    watch({re.sub(r'[\[\]\(\)]', '_', str(pcoll)): pcoll})
+
+  import warnings
+  warnings.filterwarnings('ignore', category=DeprecationWarning)
+  # Attempt to run background caching job since we have the reference to the
+  # user-defined pipeline.
+  bcj.attempt_to_run_background_caching_job(runner, user_pipeline,
+                                            user_pipeline.options)
+
+  # Build a pipeline fragment for the PCollections and run it.
+  result = pf.PipelineFragment([pcoll], user_pipeline.options).run()
+  ie.current_env().set_pipeline_result(
+      user_pipeline,
+      result)
+
+  # Invoke wait_until_finish to ensure the blocking nature of this API without
+  # relying on the run to be blocking.
+  result.wait_until_finish()
+
+  cache = ie.current_env().cache_manager()
+  results = []
+  for e in result.get(pcoll):
+    results.append(e)
+
+  # If the pipeline execution is successful at this stage, mark the computation
+  # completeness for the given PCollections so that when further `show`
+  # invocation occurs, Interactive Beam wouldn't need to re-compute them.
+  if result.state is beam.runners.runner.PipelineState.DONE:
+    ie.current_env().mark_pcollection_computed([pcoll])
+
+  return results
+
+
+def head(pcoll, n=5):
+  """Materializes the first n elements from a PCollection.
+  """
+  assert isinstance(pcoll, beam.pvalue.PCollection), (
+      '{} is not an apache_beam.pvalue.PCollection.'.format(pcoll))
+
+  user_pipeline = pcoll.pipeline
+  runner = user_pipeline.runner
+  if isinstance(runner, ir.InteractiveRunner):
+    runner = runner._underlying_runner
+
+  # Make sure that all PCollections to be shown are watched. If a PCollection
+  # has not been watched, make up a variable name for that PCollection and watch
+  # it. No validation is needed here because the watch logic can handle
+  # arbitrary variables.
+  watched_pcollections = set()
+  for watching in ie.current_env().watching():
+    for _, val in watching:
+      if hasattr(val, '__class__') and isinstance(val, beam.pvalue.PCollection):
+        watched_pcollections.add(val)
+  if pcoll not in watched_pcollections:
+    watch({re.sub(r'[\[\]\(\)]', '_', str(pcoll)): pcoll})
+
+  import warnings
+  warnings.filterwarnings('ignore', category=DeprecationWarning)
+  # Attempt to run background caching job since we have the reference to the
+  # user-defined pipeline.
+  bcj.attempt_to_run_background_caching_job(runner, user_pipeline,
+                                            user_pipeline.options)
+
+  # Build a pipeline fragment for the PCollections and run it.
+  result = pf.PipelineFragment([pcoll], user_pipeline.options).run()
+  ie.current_env().set_pipeline_result(
+      user_pipeline,
+      result)
+
+  # Invoke wait_until_finish to ensure the blocking nature of this API without
+  # relying on the run to be blocking.
+  result.wait_until_finish()
+
+  cache = ie.current_env().cache_manager()
+  results = []
+  for e in result.get(pcoll):
+    results.append(e)
+    if len(results) >= n:
+      break
+
+  # If the pipeline execution is successful at this stage, mark the computation
+  # completeness for the given PCollections so that when further `show`
+  # invocation occurs, Interactive Beam wouldn't need to re-compute them.
+  if result.state is beam.runners.runner.PipelineState.DONE:
+    ie.current_env().mark_pcollection_computed([pcoll])
+
+  return results
+
+
 def show_graph(pipeline):
   """Shows the current pipeline shape of a given Beam pipeline as a DAG.
   """

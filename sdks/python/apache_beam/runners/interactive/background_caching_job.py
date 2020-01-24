@@ -246,12 +246,19 @@ def is_source_to_cache_changed(user_pipeline,
   # The computation of extract_unbounded_source_signature is expensive, track on
   # change by default.
   if is_changed and update_cached_source_signature:
+    if not recorded_signature:
+      print('Interactive Beam has detected you have unbounded sources '
+                   'in your pipeline. In order to have a deterministic replay '
+                   'of your pipeline, a 60s segment will be recorded from '
+                   'each of your sources.')
+    else:
+      print('New streaming source has been detected. Interactive '
+                      'Beam will capture new streaming data from all streaming '
+                      'sources and use them.')
+
     ie.current_env().set_cached_source_signature(user_pipeline,
                                                  current_signature)
     ie.current_env().cleanup()
-    _LOGGER.warning('New streaming source has been detected. Interactive Beam '
-                    'will capture new streaming data from all streaming '
-                    'sources and use them.')
   return is_changed
 
 
