@@ -152,7 +152,9 @@ class InteractiveRunner(runners.PipelineRunner):
               user_pipeline)):
         streaming_cache_manager = ie.current_env().get_cache_manager(
             user_pipeline)
-        if streaming_cache_manager:
+        if (streaming_cache_manager and
+            not ie.current_env().get_test_stream_service_controller(
+                user_pipeline)):
 
           def exception_handler(e):
             _LOGGER.error(str(e))
