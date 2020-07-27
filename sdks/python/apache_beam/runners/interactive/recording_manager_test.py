@@ -21,6 +21,7 @@ import unittest
 
 import apache_beam as beam
 from apache_beam import coders
+from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.portability.api.beam_interactive_api_pb2 import TestStreamFileRecord
 from apache_beam.runners.interactive import background_caching_job as bcj
 from apache_beam.runners.interactive import interactive_beam as ib
@@ -32,6 +33,8 @@ from apache_beam.runners.interactive.recording_manager import Recording
 from apache_beam.runners.interactive.recording_manager import RecordingManager
 from apache_beam.runners.interactive.testing.test_cache_manager import FileRecordsBuilder
 from apache_beam.runners.interactive.testing.test_cache_manager import InMemoryCache
+from apache_beam.runners.interactive.utils import to_element_list
+from apache_beam.testing.test_stream import TestStream
 from apache_beam.transforms.window import GlobalWindow
 from apache_beam.utils.timestamp import MIN_TIMESTAMP
 from apache_beam.utils.windowed_value import WindowedValue
@@ -268,7 +271,12 @@ class RecordingManagerTest(unittest.TestCase):
     p = beam.Pipeline(InteractiveRunner())
     elems = p | beam.Create([0, 1, 2])
 
+    # Watch the local scope for Interactive Beam so that referenced PCollections
+    # will be cached.
     ib.watch(locals())
+
+    # This is normally done in the interactive_utils when a transform is
+    # applied but needs an IPython environment. So we manually run this here.
     ie.current_env().track_user_pipelines()
 
     rm = RecordingManager(p)
@@ -284,6 +292,114 @@ class RecordingManagerTest(unittest.TestCase):
         WindowedValue(i, MIN_TIMESTAMP, [GlobalWindow()]) for i in range(3)
     ]
     self.assertListEqual(elems, expected_elems)
+
+    rm.cancel()
+    recording.wait_until_finish()
+
+  def test_cancel_stops_recording(self):
+    # Add the TestStream so that it can be cached.
+    ib.options.capturable_sources.add(TestStream)
+
+    # Set up a simple streaming pipeline that emits elements 0-4 in one bundle
+    # then 5-9 in a subsequent bundle.
+    p = beam.Pipeline(
+        InteractiveRunner(), options=PipelineOptions(streaming=True))
+    elems = (
+        p
+        | TestStream().advance_watermark_to(0).advance_processing_time(
+            1).add_elements(range(5)).advance_watermark_to(
+                20).advance_processing_time(1).add_elements(range(
+                    5, 10)).advance_watermark_to(30).advance_processing_time(1))
+    squares = elems | beam.Map(lambda x: x**2)
+
+    # Watch the local scope for Interactive Beam so that referenced PCollections
+    # will be cached.
+    ib.watch(locals())
+
+    # This is normally done in the interactive_utils when a transform is
+    # applied but needs an IPython environment. So we manually run this here.
+    ie.current_env().track_user_pipelines()
+
+    # Create a RecordingManager and first get all 10 elements. This ensures that
+    # the cache is filled with all elements. We will then get the elements again
+    # with less max_n to ensure that the cache was cleared.
+    rm = RecordingManager(p)
+    recording = rm.record([squares], max_n=1, max_duration_secs=30)
+
+    bcj = ie.current_env().get_background_caching_job(p)
+    print(bcj._pipeline_result.state)
+    self.assertFalse(bcj.is_done())
+    print(bcj._pipeline_result.state)
+
+    _ = list(recording.stream(squares).read())
+    rm.cancel()
+    recording.wait_until_finish()
+    print(bcj._pipeline_result.state)
+    self.assertTrue(bcj.is_done())
+
+  def test_recording_manager_clears_cache(self):
+    """Tests that the RecordingManager clears the cache before recording.
+
+    A job may have incomplete PCollections when the job terminates. Clearing the
+    cache ensures that correct results are computed every run.
+    """
+    # Add the TestStream so that it can be cached.
+    ib.options.capturable_sources.add(TestStream)
+
+    # Set up a simple streaming pipeline that emits elements 0-4 in one bundle
+    # then 5-9 in a subsequent bundle.
+    p = beam.Pipeline(
+        InteractiveRunner(), options=PipelineOptions(streaming=True))
+    elems = (
+        p
+        | TestStream().advance_watermark_to(0).advance_processing_time(
+            1).add_elements(range(5)).advance_watermark_to(
+                20).advance_processing_time(1).add_elements(range(
+                    5, 10)).advance_watermark_to(30).advance_processing_time(1))
+    squares = elems | beam.Map(lambda x: x**2)
+
+    # Watch the local scope for Interactive Beam so that referenced PCollections
+    # will be cached.
+    ib.watch(locals())
+
+    # This is normally done in the interactive_utils when a transform is
+    # applied but needs an IPython environment. So we manually run this here.
+    ie.current_env().track_user_pipelines()
+
+    # Create a RecordingManager and first get all 10 elements. This ensures that
+    # the cache is filled with all elements. We will then get the elements again
+    # with less max_n to ensure that the cache was cleared.
+    rm = RecordingManager(p)
+    recording = rm.record([squares], max_n=10, max_duration_secs=30)
+    elements = [w.value for w in recording.stream(squares).read()]
+
+    # Get the cache, key, and coder to read the PCollection from the cache.
+    pipeline_instrument = pi.PipelineInstrument(p)
+    cache = ie.current_env().get_cache_manager(p)
+    cache_key = pipeline_instrument.cache_key(squares)
+    coder = cache.load_pcoder('full', cache_key)
+
+    # Assert that the cache has the maximum amount of elements.
+    cached_squares = list(
+        to_element_list(
+            cache.read('full', cache_key)[0], coder, include_window_info=False))
+    self.assertEqual(len(cached_squares), 10)
+    self.assertSequenceEqual(cached_squares, elements)
+
+    # Redo the test, this time with less max_n. If the cache was cleared
+    # correctly, the read elements should only have the specified max_n.
+    # Otherwise the test reads the previously cached elements.
+    recording = rm.record([squares], max_n=5, max_duration_secs=30)
+    elements = [w.value for w in recording.stream(squares).read()]
+
+    cached_squares = list(
+        to_element_list(
+            cache.read('full', cache_key)[0], coder, include_window_info=False))
+    self.assertEqual(len(cached_squares), 5)
+    self.assertSequenceEqual(cached_squares, elements)
+
+    rm.cancel()
+    recording.wait_until_finish()
 
 
 if __name__ == '__main__':

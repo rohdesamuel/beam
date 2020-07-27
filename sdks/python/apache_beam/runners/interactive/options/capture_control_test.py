@@ -160,27 +160,6 @@ class CaptureControlTest(unittest.TestCase):
     limiter = capture_limiters.SizeLimiter(1)
     self.assertTrue(limiter.is_triggered())
 
-  def test_timer_terminates_capture_size_checker(self):
-    p = _build_an_empty_streaming_pipeline()
-
-    class FakeLimiter(capture_limiters.Limiter):
-      def __init__(self):
-        self.trigger = False
-
-      def is_triggered(self):
-        return self.trigger
-
-    limiter = FakeLimiter()
-    background_caching_job = bcj.BackgroundCachingJob(
-        runner.PipelineResult(runner.PipelineState.CANCELLED),
-        limiters=[limiter])
-    ie.current_env().set_background_caching_job(p, background_caching_job)
-
-    self.assertFalse(background_caching_job.is_done())
-
-    limiter.trigger = True
-    self.assertTrue(background_caching_job.is_done())
-
 
 if __name__ == '__main__':
   unittest.main()

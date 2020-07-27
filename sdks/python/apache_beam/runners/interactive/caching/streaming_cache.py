@@ -288,6 +288,7 @@ class StreamingCache(CacheManager):
     # The sinks to capture data from capturable sources.
     # Dict([str, StreamingCacheSink])
     self._capture_sinks = {}
+    self._capture_keys = set()
 
   @property
   def capture_size(self):
@@ -296,6 +297,10 @@ class StreamingCache(CacheManager):
   @property
   def capture_paths(self):
     return list(self._capture_sinks.keys())
+
+  @property
+  def capture_keys(self):
+    return self._capture_keys
 
   def exists(self, *labels):
     path = os.path.join(self._cache_dir, *labels)
@@ -383,6 +388,7 @@ class StreamingCache(CacheManager):
     sink = StreamingCacheSink(cache_dir, filename, self._sample_resolution_sec)
     if is_capture:
       self._capture_sinks[sink.path] = sink
+      self._capture_keys.add(filename)
     return sink
 
   def save_pcoder(self, pcoder, *labels):
@@ -398,6 +404,7 @@ class StreamingCache(CacheManager):
       shutil.rmtree(self._cache_dir)
     self._saved_pcoders = {}
     self._capture_sinks = {}
+    self._capture_keys = set()
 
   class Reader(object):
     """Abstraction that reads from PCollection readers.

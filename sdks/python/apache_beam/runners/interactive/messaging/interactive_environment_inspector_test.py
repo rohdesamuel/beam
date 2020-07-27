@@ -180,12 +180,13 @@ class InteractiveEnvironmentInspectorTest(unittest.TestCase):
     counts = pcoll | beam.combiners.Count.PerElement()
 
     ib.watch(locals())
+    ie.current_env().track_user_pipelines()
     counts_identifier = obfuscate(inspector.meta('counts', counts))
     ins = inspector.InteractiveEnvironmentInspector()
     _ = ins.list_inspectables()
 
     actual_counts_pcoll_data = ins.get_pcoll_data(counts_identifier)
-    expected_counts_pcoll_data = ib.collect(counts).to_json(orient='table')
+    expected_counts_pcoll_data = ib.collect(counts, n=1).to_json(orient='table')
     self.assertEqual(actual_counts_pcoll_data, expected_counts_pcoll_data)
 
     actual_counts_with_window_info = ins.get_pcoll_data(counts_identifier, True)

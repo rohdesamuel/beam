@@ -232,7 +232,6 @@ class RecordingManager:
   def __init__(self, user_pipeline):
     # type: (beam.Pipeline, List[Limiter]) -> None
     self.user_pipeline = user_pipeline
-    self._pipeline_instrument = pi.PipelineInstrument(self.user_pipeline)
 
   def _watch(self, pcolls):
     # type: (List[beam.pvalue.PCollection]) -> None
@@ -253,15 +252,27 @@ class RecordingManager:
         ie.current_env().watch(
             {'anonymous_pcollection_{}'.format(id(pcoll)): pcoll})
 
-  def clear(self, pcolls):
+  def _clear(self, pipeline_instrument):
     # type: (List[beam.pvalue.PCollection]) -> None
 
-    """Clears the cache of the given PCollections."""
+    """Clears the recording of all non-source PCollections."""
 
     cache_manager = ie.current_env().get_cache_manager(self.user_pipeline)
-    for pc in pcolls:
-      cache_key = self._pipeline_instrument.cache_key(pc)
+
+    # Only clear the PCollections that aren't being populated from the
+    # BackgroundCachingJob.
+    all_cached = set(
+        str(c.to_key()) for c in pipeline_instrument.cacheables.values())
+    source_pcolls = getattr(cache_manager, 'capture_keys', set())
+    to_clear = all_cached - source_pcolls
+
+    for cache_key in to_clear:
       cache_manager.clear('full', cache_key)
+
+  def cancel(self):
+    bcj = ie.current_env().get_background_caching_job(self.user_pipeline)
+    if bcj:
+      bcj.cancel()
 
   def record(self, pcolls, max_n, max_duration_secs):
     # type: (List[beam.pvalue.PCollection]) -> Recording
@@ -287,6 +298,7 @@ class RecordingManager:
     # watch it. No validation is needed here because the watch logic can handle
     # arbitrary variables.
     self._watch(pcolls)
+    pipeline_instrument = pi.PipelineInstrument(self.user_pipeline)
 
     # Attempt to run background caching job to record any sources.
     if ie.current_env().is_in_ipython:
@@ -308,7 +320,7 @@ class RecordingManager:
     if uncomputed_pcolls:
       # Clear the cache of the given uncomputed PCollections because they are
       # incomplete.
-      self.clear(uncomputed_pcolls)
+      self._clear(pipeline_instrument)
 
       warnings.filterwarnings(
           'ignore',
@@ -325,6 +337,6 @@ class RecordingManager:
         self.user_pipeline,
         pcolls,
         result,
-        self._pipeline_instrument,
+        pipeline_instrument,
         max_n,
         max_duration_secs)
