@@ -50,15 +50,30 @@ public class HotKeyLoggerTest {
   }
 
   @Test
-  public void correctHotKeyMessage() {
+  public void correctHotKeyMessageWithoutKey() {
     HotKeyLogger hotKeyLogger = new HotKeyLogger(clock);
 
     assertFalse(hotKeyLogger.isThrottled());
-    String m = hotKeyLogger.getHotKeyMessage("TEST_STEP_ID", "1s");
+    String m = hotKeyLogger.getHotKeyMessage("TEST_STEP_ID", "1s", null);
     assertTrue(hotKeyLogger.isThrottled());
 
     assertEquals(
         "A hot key was detected in step 'TEST_STEP_ID' with age of '1s'. This is a "
+            + "symptom of key distribution being skewed. To fix, please inspect your data and "
+            + "pipeline to ensure that elements are evenly distributed across your key space.",
+        m);
+  }
+
+  @Test
+  public void correctHotKeyMessageWithKey() {
+    HotKeyLogger hotKeyLogger = new HotKeyLogger(clock);
+
+    assertFalse(hotKeyLogger.isThrottled());
+    String m = hotKeyLogger.getHotKeyMessage("TEST_STEP_ID", "1s", "my key");
+    assertTrue(hotKeyLogger.isThrottled());
+
+    assertEquals(
+        "A hot key 'my key' was detected in step 'TEST_STEP_ID' with age of '1s'. This is a "
             + "symptom of key distribution being skewed. To fix, please inspect your data and "
             + "pipeline to ensure that elements are evenly distributed across your key space.",
         m);
@@ -94,10 +109,10 @@ public class HotKeyLoggerTest {
     HotKeyLogger hotKeyLogger = new HotKeyLogger(clock);
 
     // Logs because not throttled.
-    hotKeyLogger.logHotKeyDetection("TEST_STEP_ID", Duration.standardHours(1));
+    hotKeyLogger.logHotKeyDetection("TEST_STEP_ID", Duration.standardHours(1), "");
 
     // Does not log because throttled.
-    hotKeyLogger.logHotKeyDetection("TEST_STEP_ID", Duration.standardHours(1));
+    hotKeyLogger.logHotKeyDetection("TEST_STEP_ID", Duration.standardHours(1), "");
 
     // Only logs once because of throttling.
     verify(logger, Mockito.times(1)).warn(anyString());

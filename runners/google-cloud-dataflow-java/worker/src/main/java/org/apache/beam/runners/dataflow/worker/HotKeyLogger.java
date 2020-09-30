@@ -47,10 +47,15 @@ public class HotKeyLogger {
 
   /** Logs a detection of the hot key every 5 minutes. */
   public void logHotKeyDetection(String userStepName, Duration hotKeyAge) {
+    logHotKeyDetection(userStepName, hotKeyAge, null);
+  }
+
+  /** Logs a detection of the hot key every 5 minutes with the given key. */
+  public void logHotKeyDetection(String userStepName, Duration hotKeyAge, Object hotkey) {
     if (isThrottled()) {
       return;
     }
-    LOG.warn(getHotKeyMessage(userStepName, TimeUtil.toCloudDuration(hotKeyAge)));
+    LOG.warn(getHotKeyMessage(userStepName, TimeUtil.toCloudDuration(hotKeyAge), hotkey));
   }
 
   /**
@@ -67,11 +72,19 @@ public class HotKeyLogger {
     return false;
   }
 
-  protected String getHotKeyMessage(String userStepName, String hotKeyAge) {
+  protected String getHotKeyMessage(String userStepName, String hotKeyAge, Object hotkey) {
+    if (hotkey == null) {
+      return MessageFormat.format(
+          "A hot key was detected in step ''{0}'' with age of ''{1}''. This is "
+              + "a symptom of key distribution being skewed. To fix, please inspect your data and "
+              + "pipeline to ensure that elements are evenly distributed across your key space.",
+          userStepName, hotKeyAge);
+    }
+
     return MessageFormat.format(
-        "A hot key was detected in step ''{0}'' with age of ''{1}''. This is"
-            + " a symptom of key distribution being skewed. To fix, please inspect your data and "
+        "A hot key ''{0}'' was detected in step ''{1}'' with age of ''{2}''. This is "
+            + "a symptom of key distribution being skewed. To fix, please inspect your data and "
             + "pipeline to ensure that elements are evenly distributed across your key space.",
-        userStepName, hotKeyAge);
+        hotkey, userStepName, hotKeyAge);
   }
 }
