@@ -455,10 +455,7 @@ def show(
   element_types = {}
   for pcoll in flatten_pcolls:
     if isinstance(pcoll, DeferredBase):
-      proxy = pcoll._expr.proxy()
-      pcoll = to_pcollection(
-          pcoll, yield_elements='pandas', label=str(pcoll._expr))
-      element_type = proxy
+      pcoll, element_type = deferred_df_to_pcollection(pcoll)
       watch({'anonymous_pcollection_{}'.format(id(pcoll)): pcoll})
     else:
       element_type = pcoll.element_type
@@ -568,7 +565,6 @@ def collect(pcoll, n='inf', duration='inf', include_window_info=False):
   # Remember the element type so we can make an informed decision on how to
   # collect the result in elements_to_df.
   if isinstance(pcoll, DeferredBase):
-    # Get the proxy so we can get the output shape of the DataFrame.
     pcoll, element_type = deferred_df_to_pcollection(pcoll)
     watch({'anonymous_pcollection_{}'.format(id(pcoll)): pcoll})
   else:
